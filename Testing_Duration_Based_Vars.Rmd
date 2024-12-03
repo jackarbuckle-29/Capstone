@@ -1,0 +1,671 @@
+---
+title: "Testing - Duration Based Metrics"
+author: "Kaylin Slattery"
+date: "2024-03-18"
+output: html_document
+---
+
+## <span style= "color:#0C2340" > DATA IMPORTATION & SET UP <span style= "color:#0C2340" >
+
+```{r packages warnings=FALSE, error=FALSE, message=FALSE}
+library(tidyverse)
+library(DescTools)
+library(janitor)
+library(ggplot2)
+library(jpeg)
+library(chron)
+library(lubridate)
+library(anytime)
+library(ggpubr)
+library(devtools) 
+#install_github("AppliedDataSciencePartners/xgboostExplainer")
+library(xgboost) # Load XGBoost
+library(caret) # Load Caret
+library(xgboostExplainer) # Load XGboost Explainer
+library(pROC) # Load proc
+library(SHAPforxgboost) # Load shap for XGBoost
+library(plyr)
+library(Metrics)
+```
+
+```{r nd colors}
+# setting ND colors 
+nd_navy <- "#0C2340"
+nd_green <- "#00843D"
+nd_gold <- "#C99700"
+```
+
+```{r creating functions}
+calc_num_zeros_by_col <- function(df_title) {
+  cols_vec <- colnames(df_title)
+  zeros_count_vec <- rep("", length=length(cols_vec))
+  zeros_test_vec <- rep("", length=length(cols_vec))
+
+  for (i in 1:length(cols_vec)){
+    zeros_count_vec[i] <- sum(df_title[,i] == 0)
+    zeros_test_vec[i] <- sum(df_title[,i] == 0 | df_title[,i] == "0")
+  }
+
+  zero_count_df <- cbind.data.frame(cols_vec, as.numeric(zeros_count_vec))
+  names(zero_count_df) <- c("column_name", "number_zeros")
+
+  # Append df_title to the dataframe name
+  assign(paste0("zero_count_df_", deparse(substitute(df_title))), zero_count_df,
+         envir = .GlobalEnv)
+}
+```
+
+# lax 1 set up 
+```{r}
+lax1_data <- read.csv(".\\Exported_CSVs\\lax1_data_cleaned.csv")
+lax1_data <- lax1_data %>%
+  dplyr::rename(high_speed_distance=high_speed_running_distance_session)
+```
+
+
+```{r duration-based vars}
+lax1_mod_df <- lax1_data %>% filter(total_duration != 0 & high_speed_distance != 0)
+sel_col_names <- names(lax1_mod_df)[1:12]
+sub_cols <- c("total_duration", "unique_session", "high_speed_distance",
+              sel_col_names) 
+mini_df <- lax1_mod_df[c(1:100), sub_cols] 
+
+# dur_prep_mod_df <-  mini_df %>% 
+#   filter(total_duration != 0) %>%
+#   arrange(unique_session) 
+
+dur_prep_mod_df <- lax1_mod_df %>% 
+  filter(total_duration !=0) %>%
+  arrange(unique_session)
+
+
+cols_to_drop_dur_calc <- c("binary")
+include_cols <- dur_prep_mod_df %>% select_if(is.numeric) %>% names()
+include_cols <- c("unique_session", include_cols)
+
+dur_prep_mod_df <- dur_prep_mod_df %>% 
+  select(contains(include_cols)) %>%
+  select(-contains(cols_to_drop_dur_calc)) 
+
+full_df <- as.data.frame(matrix(ncol=dim(dur_prep_mod_df)[2]))
+names(full_df) <- names(dur_prep_mod_df)
+
+for(i in 1:length(dur_prep_mod_df)){
+  df_non_num <- dur_prep_mod_df %>% select_if(is.character) 
+  df_num <- dur_prep_mod_df %>% select_if(is.numeric) 
+  df_num_over_time <- (df_num)/dur_prep_mod_df$total_duration
+  full_df <- cbind(df_num_over_time) #,df_non_num)
+}
+
+names(full_df) <- paste0(names(full_df), "_per_min") 
+
+comb_dur_df <- cbind.data.frame(dur_prep_mod_df, full_df) 
+```
+
+```{r subset data for modeling}
+not_include_vec <- comb_dur_df %>% select_if(is.character) %>% names()
+not_include_vec <- c("high_speed_distance_per_min", not_include_vec, "total_duration.1")
+
+model_df <- comb_dur_df %>% filter(high_speed_distance != 0) %>%
+  select(-contains(not_include_vec)) %>%
+  #filter(high_speed_distance >= low_lim) %>% #& total_high_speed_distance <= up_lim)  %>%
+  select(all_of("high_speed_distance"), everything()) 
+
+model_df %>% glimpse()
+```
+
+```{r partitioning data}
+sum(is.na(model_df)) #check NA values
+
+set.seed(33) # Set Seed
+split_ratio <- 0.75
+train_row_ind <- sample(x=nrow(model_df), 
+                     size=floor(nrow(model_df) * split_ratio))
+
+# Split the data into training and testing sets
+train_data <- model_df[train_row_ind, ]
+test_data <- model_df[-train_row_ind, ]
+
+train_response = train_data[,1]
+train_x = train_data[,-1]
+test_response = test_data[,1]
+test_x = test_data[,-1]
+
+response <- model_df$high_speed_distance
+#train_response <- response[train_row_ind]
+#test_response <- response[train_row_ind]
+
+# Create training data XGBOOST
+dtrain <- xgb.DMatrix(data = as.matrix(train_data[ ,-1]), label = train_response)
+# Create test data XGBOOST
+dtest <- xgb.DMatrix(data = as.matrix(test_data[ ,-1]),label = test_response)
+```
+
+
+
+## UPDATED MODELING - XGBoost and model tuning
+
+```{r model using best training test split - reg and z-score, results='hide'}
+selected_sport <- "Combined Soccer"
+xgb_viz_title <- "XGBoost Model Actual vs Predicted High Speed Distance (covered)"
+
+bst_split_mod_pre_tune <- xgboost(
+    data = dtrain,  #as.matrix(train_data[, -1])
+    label = train_data$high_speed_distance, #train_data$high_speed_distance
+    booster = "gblinear",  # Use linear booster for regression
+    objective = "reg:linear",  # Specify regression as the objective
+    eval_metric = "rmse",  # Evaluation metric (Root Mean Squared Error)
+    nrounds = 2000,  
+    print_every_n = 20, 
+    eta = 0.01)
+
+# Make predictions on the test data
+bst_preds_pre_tune <- predict(bst_split_mod_pre_tune, dtest) #as.matrix(test_data[, -1])
+  
+bst_actual_pre_tune <- test_data$high_speed_distance
+  
+# Calculate RMSE (Root Mean Squared Error) for model evaluation
+rmse <- sqrt(mean((bst_preds_pre_tune - test_data$high_speed_distance)^2))
+#You can also inspect the model's feature importance if needed
+importance <- xgb.importance(feature_names = colnames(as.matrix(train_data[, -1])),
+                             model = bst_split_mod_pre_tune)
+
+#preds1 <- predict(bst_1, dtest)
+bst_split_pred_data_pre_tune <- cbind.data.frame(bst_preds_pre_tune, bst_actual_pre_tune)
+  
+names(bst_split_pred_data_pre_tune) <- c("predicted", "actual")
+
+# calc difference as actual-predicted
+bst_split_pred_data_pre_tune$difference <- bst_split_pred_data_pre_tune$actual - bst_split_pred_data_pre_tune$predicted 
+bst_split_pred_data_pre_tune$time <- "pre-tune"
+
+pre_tune_diff_summary_soc1 <- summary(bst_split_pred_data_pre_tune$difference)
+
+# bst_split_pred_data_pre_tune %>% 
+#   filter(bst_split_pred_data_pre_tune$difference == max(bst_split_pred_data_pre_tune$difference) | 
+#          bst_split_pred_data_pre_tune$difference == min(bst_split_pred_data_pre_tune$difference))  
+
+# DATA VIZ
+pred_viz_pre_tune <- ggplot(bst_split_pred_data_pre_tune, aes(x = predicted, y = actual)) + geom_point(color=nd_navy) +
+  geom_smooth(color=nd_gold) + theme_minimal() +
+  labs(title = xgb_viz_title, 
+    subtitle = paste(selected_sport, "Data;","Duration-Based Model", sep=" "))
+
+
+ggplot(bst_split_pred_data_pre_tune, aes(x = predicted, y = actual)) +
+  geom_point(color=nd_navy) +
+  geom_smooth(color=nd_gold) + theme_minimal() +
+  labs(title = xgb_viz_title, 
+    subtitle = paste(selected_sport, "Data;","Duration-Based Model", sep=" ")) 
+#+ ylim(0,5000) + xlim(-5000,8000)
+
+viz_time <- "pre-tuning"
+diff_hist_pre_tune <- ggplot(bst_split_pred_data_pre_tune,
+       aes(x = difference, #fill = color_condition_wt,
+           y = after_stat(count / sum(count)))) +
+  geom_histogram(fill = nd_navy, alpha=0.5) +
+  labs(title = "Histogram of Difference between Prediction vs Actual",
+       subtitle= paste0(selected_sport, " High Speed Distance ", viz_time),
+       x = "Difference between Prediction and Actual",
+       y = "Percent Frequency") +
+  theme_minimal() #+ ylim(0, .25) + xlim(-750, 500)
+```
+
+
+
+
+
+# LAX 0  SET UP 
+```{r}
+lax0_data <- read.csv(".\\Exported_CSVs\\lax0_data_cleaned.csv")
+lax0_data <- lax0_data %>%
+  dplyr::rename(high_speed_distance_perc=high_speed_distance, 
+                high_speed_distance=high_speed_distance_covered)
+```
+
+
+```{r duration-based vars}
+lax0_mod_df <- lax0_data %>% filter(total_duration != 0)
+sel_col_names <- names(lax0_mod_df)[1:12]
+sub_cols <- c("total_duration", "unique_session", "high_speed_distance",
+              sel_col_names) 
+mini_df <- lax0_mod_df[c(1:100), sub_cols] 
+
+dur_prep_mod_df <-  mini_df %>% 
+  filter(total_duration != 0) %>%
+  arrange(unique_session) 
+cols_to_drop_dur_calc <- c("binary")
+include_cols <- dur_prep_mod_df %>% select_if(is.numeric) %>% names()
+include_cols <- c("unique_session", include_cols)
+
+dur_prep_mod_df <- dur_prep_mod_df %>% 
+  select(contains(include_cols)) %>%
+  select(-contains(cols_to_drop_dur_calc)) 
+
+full_df <- as.data.frame(matrix(ncol=dim(dur_prep_mod_df)[2]))
+names(full_df) <- names(dur_prep_mod_df)
+
+for(i in 1:length(dur_prep_mod_df)){
+  df_non_num <- dur_prep_mod_df %>% select_if(is.character) 
+  df_num <- dur_prep_mod_df %>% select_if(is.numeric) 
+  df_num_over_time <- (df_num)/dur_prep_mod_df$total_duration
+  full_df <- cbind(df_num_over_time) #,df_non_num)
+}
+
+names(full_df) <- paste0(names(full_df), "_per_min") 
+
+comb_dur_df <- cbind.data.frame(mini_df, full_df) 
+```
+
+```{r subset data for modeling}
+not_include_vec <- comb_dur_df %>% select_if(is.character) %>% names()
+not_include_vec <- c("high_speed_distance_per_min", not_include_vec)
+
+model_df <- comb_dur_df %>% filter(high_speed_distance != 0) %>%
+  select(-contains(not_include_vec)) %>%
+  #filter(high_speed_distance >= low_lim) %>% #& total_high_speed_distance <= up_lim)  %>%
+  select(all_of("high_speed_distance"), everything()) 
+```
+
+```{r partitioning data}
+sum(is.na(model_df)) #check NA values
+
+set.seed(33) # Set Seed
+split_ratio <- 0.75
+train_row_ind <- sample(x=nrow(model_df), 
+                     size=floor(nrow(model_df) * split_ratio))
+
+# Split the data into training and testing sets
+train_data <- model_df[train_row_ind, ]
+test_data <- model_df[-train_row_ind, ]
+
+train_response = train_data[,1]
+train_x = train_data[,-1]
+test_response = test_data[,1]
+test_x = test_data[,-1]
+
+response <- model_df$high_speed_distance
+#train_response <- response[train_row_ind]
+#test_response <- response[train_row_ind]
+
+# Create training data XGBOOST
+dtrain <- xgb.DMatrix(data = as.matrix(train_data[ ,-1]), label = train_response)
+# Create test data XGBOOST
+dtest <- xgb.DMatrix(data = as.matrix(test_data[ ,-1]),label = test_response)
+```
+
+
+
+## UPDATED MODELING - XGBoost and model tuning
+
+```{r model using best training test split - reg and z-score, results='hide'}
+selected_sport <- "Combined Soccer"
+xgb_viz_title <- "XGBoost Model Actual vs Predicted High Speed Distance (covered)"
+
+bst_split_mod_pre_tune <- xgboost(
+    data = dtrain,  #as.matrix(train_data[, -1])
+    label = train_data$high_speed_distance, #train_data$high_speed_distance
+    booster = "gblinear",  # Use linear booster for regression
+    objective = "reg:linear",  # Specify regression as the objective
+    eval_metric = "rmse",  # Evaluation metric (Root Mean Squared Error)
+    nrounds = 2000,  
+    print_every_n = 20, 
+    eta = 0.01)
+
+# Make predictions on the test data
+bst_preds_pre_tune <- predict(bst_split_mod_pre_tune, dtest) #as.matrix(test_data[, -1])
+  
+bst_actual_pre_tune <- test_data$high_speed_distance
+  
+# Calculate RMSE (Root Mean Squared Error) for model evaluation
+rmse <- sqrt(mean((bst_preds_pre_tune - test_data$high_speed_distance)^2))
+#You can also inspect the model's feature importance if needed
+importance <- xgb.importance(feature_names = colnames(as.matrix(train_data[, -1])),
+                             model = bst_split_mod_pre_tune)
+
+#preds1 <- predict(bst_1, dtest)
+bst_split_pred_data_pre_tune <- cbind.data.frame(bst_preds_pre_tune, bst_actual_pre_tune)
+  
+names(bst_split_pred_data_pre_tune) <- c("predicted", "actual")
+
+# calc difference as actual-predicted
+bst_split_pred_data_pre_tune$difference <- bst_split_pred_data_pre_tune$actual - bst_split_pred_data_pre_tune$predicted 
+bst_split_pred_data_pre_tune$time <- "pre-tune"
+
+pre_tune_diff_summary_soc1 <- summary(bst_split_pred_data_pre_tune$difference)
+
+# bst_split_pred_data_pre_tune %>% 
+#   filter(bst_split_pred_data_pre_tune$difference == max(bst_split_pred_data_pre_tune$difference) | 
+#          bst_split_pred_data_pre_tune$difference == min(bst_split_pred_data_pre_tune$difference))  
+
+# DATA VIZ
+pred_viz_pre_tune <- ggplot(bst_split_pred_data_pre_tune, aes(x = predicted, y = actual)) + geom_point(color=nd_navy) +
+  geom_smooth(color=nd_gold) + theme_minimal() +
+  labs(title = xgb_viz_title, 
+    subtitle = paste(selected_sport, "Data;","Duration-Based Model", sep=" "))
+
+
+ggplot(bst_split_pred_data_pre_tune, aes(x = predicted, y = actual)) +
+  geom_point(color=nd_navy) +
+  geom_smooth(color=nd_gold) + theme_minimal() +
+  labs(title = xgb_viz_title, 
+    subtitle = paste(selected_sport, "Data;","Duration-Based Model", sep=" ")) 
+#+ ylim(0,5000) + xlim(-5000,8000)
+
+viz_time <- "pre-tuning"
+diff_hist_pre_tune <- ggplot(bst_split_pred_data_pre_tune,
+       aes(x = difference, #fill = color_condition_wt,
+           y = after_stat(count / sum(count)))) +
+  geom_histogram(fill = nd_navy, alpha=0.5) +
+  labs(title = "Histogram of Difference between Prediction vs Actual",
+       subtitle= paste0(selected_sport, " High Speed Distance ", viz_time),
+       x = "Difference between Prediction and Actual",
+       y = "Percent Frequency") +
+  theme_minimal() #+ ylim(0, .25) + xlim(-750, 500)
+```
+
+
+
+# soccer
+```{r read data}
+#soc1_data <- read.csv("SOCdata1.csv") #reading in data
+
+high_speed_dist_var_name <- "total_high_speed_distance"
+```
+
+
+```{r}
+soc0_data <- read.csv(".\\Exported_CSVs\\soc0_data_cleaned.csv") 
+soc1_data <- read.csv(".\\Exported_CSVs\\soc1_data_cleaned.csv") 
+```
+
+```{r}
+not_include_indoor_vec <- c("meta", "total_effort", "end_time",
+                            "heart_rate", "hr", "velocity", "acceleration",
+                            "deceleration", "metre", "meterage",
+                            "exertion_index","max_vel_max", 
+                            "footstrikes", "running_series_count", 
+                            "running_imbalance"#, #distance
+                            )
+
+length(names(soc0_data)) #826 columns
+length(names(soc1_data)) #701 columns
+
+
+# indoor_diff_01 <- setdiff(names(soc0_data), names(soc1_data))
+# indoor_diff_10 <- setdiff(names(soc1_data), names(soc0_data))
+# full_indoor_diff <- c(indoor_diff_01, indoor_diff_10)
+
+# testing_vec <- c("velocity_band_6_distance_band_1_total_efforts", 
+#                  "velocity_band_7_distance_band_1_total_efforts", 
+#                  "velocity_band_7_recovery_band_2_total_efforts" , 
+#                  "velocity_b2_average_effort_distance_gen_2_set_2",
+#                  "velocity_b2_total_efforts_gen_2_set_2")
+
+#names(soc1_data) <- str_replace_all(names(soc1_data), "_b([0-9])", "_band_\\1")
+
+# diff01 <- setdiff(names(soc0_data), names(soc1_data))
+# diff10 <- setdiff(names(soc1_data), names(soc0_data))
+# 
+# full_diff <- c(diff01, diff10)
+# length(full_diff) #245 originally
+
+cols_exclude <- c("mii", "metabolic", "heart_rate", "_set_2")
+soc0_data <- soc0_data %>% 
+  select(!contains(cols_exclude))
+
+soc1_data <- soc1_data %>% 
+  select(!contains(cols_exclude))
+
+soc1_data <- soc1_data %>%
+  dplyr::rename(
+    velocity_band_1_total_distance = velocity_band_1_0_45mph_total_distance,
+    velocity_band_2_total_distance = velocity_band_2_45_4_05mph_total_distance,
+    velocity_band_3_total_distance = velocity_band_3_4_05_7_14mph_total_distance,
+    velocity_band_4_total_distance = velocity_band_4_7_14_9_64mph_total_distance,
+    velocity_band_5_total_distance = velocity_band_5_9_64_12_12mph_total_distance,
+    velocity_band_6_total_distance = velocity_band_6_12_12_14_61mph_total_distance,
+    velocity_band_7_total_distance = velocity_band_7_14_61_mph_total_distance, 
+    high_speed_distance = total_high_speed_distance, 
+    pl_hi=pl_hi_session
+  )
+
+soc0_data$med_and_hi_ima_r <- soc0_data$ima_co_d_right_medium_1_0+soc0_data$ima_co_d_right_high_1_0
+soc0_data$med_and_hi_ima_l <- soc0_data$ima_co_d_left_medium_1_0+soc0_data$ima_co_d_left_high_1_0
+#names(soc1_data)
+
+fr0 <- soc0_data %>% select(contains("ima_free_running")) %>% names()
+fr1 <- soc1_data %>% select(contains("ima_free_running")) %>% names()
+
+free_run_exclude <- setdiff(fr0, fr1)
+
+soc0_data <- soc0_data %>% select(-contains(c(free_run_exclude)))
+```
+
+```{r}
+diff01 <- setdiff(names(soc0_data), names(soc1_data))
+diff10 <- setdiff(names(soc1_data), names(soc0_data))
+
+
+full_diff <- c(diff01, diff10)
+length(full_diff) #245 originally
+
+soc1_indoor_full_df <- soc1_data %>%
+  select(-contains(not_include_indoor_vec))
+
+soc0_indoor_full_df <- soc0_data %>%
+  select(-contains(not_include_indoor_vec))
+
+
+# should only look at differences for variables available indoors
+indoor_diff_01 <- setdiff(names(soc0_indoor_full_df), names(soc1_indoor_full_df))
+indoor_diff_10 <- setdiff(names(soc1_indoor_full_df), names(soc0_indoor_full_df))
+full_indoor_diff <- c(indoor_diff_01, indoor_diff_10)
+```
+
+
+```{r}
+exclude_to_combine <- full_indoor_diff
+# soc0_indoor_full_df <- soc0_indoor_full_df %>% select(-contains(c(exclude_to_combine)))
+# soc1_indoor_full_df <- soc1_indoor_full_df 
+
+soc1_indoor_full_df <- soc1_indoor_full_df %>%
+  #select(-contains(not_include_indoor_vec)) %>% 
+  select(-contains(c(exclude_to_combine)))
+
+soc0_indoor_full_df <- soc0_indoor_full_df %>%
+  #select(-contains(not_include_indoor_vec)) %>% 
+  select(-contains(c(exclude_to_combine)))
+
+# should only look at differences for variables available indoors
+indoor_diff_01 <- setdiff(names(soc0_indoor_full_df), names(soc1_indoor_full_df))
+indoor_diff_10 <- setdiff(names(soc1_indoor_full_df), names(soc0_indoor_full_df))
+full_indoor_diff <- c(indoor_diff_01, indoor_diff_10)
+
+
+# confirm names are sorted alphabetically
+# names(soc0_mod_sort)
+# names(soc1_mod_sort)
+dur_cols_remove0 <- soc0_indoor_full_df %>% 
+  select(contains("duration")) %>% names()
+dur_cols_remove1 <- soc1_indoor_full_df %>% 
+  select(contains("duration")) %>% names()
+dur_cols_remove <- c(dur_cols_remove0, dur_cols_remove1)
+dur_cols_remove <- dur_cols_remove[dur_cols_remove != "total_duration"]  
+
+dist_cols_remove0 <- soc0_indoor_full_df %>% 
+  select(contains("distance")) %>% names()
+dist_cols_remove1 <- soc1_indoor_full_df %>% 
+  select(contains("distance")) %>% names()
+dist_cols_remove <- c(dist_cols_remove0, dist_cols_remove1)
+dist_cols_remove <- dist_cols_remove[dist_cols_remove != "high_speed_distance"]  
+
+dist_dur_cols_remove <- c(dur_cols_remove, dist_cols_remove)
+
+soc0_indoor_full_df <- soc0_indoor_full_df %>%
+  select(-contains(dist_dur_cols_remove))
+
+soc1_indoor_full_df <- soc1_indoor_full_df %>%
+  select(-contains(dist_dur_cols_remove)) 
+#soc_full_mod_df$dist_dur_cols_remove
+
+soc0_indoor_full_df$team_gender <- 0
+soc1_indoor_full_df$team_gender <- 1
+
+soc0_mod_sort <- soc0_indoor_full_df %>% select(sort(names(.)))
+soc1_mod_sort <- soc1_indoor_full_df %>% select(sort(names(.)))
+
+dim(soc0_mod_sort)
+dim(soc1_mod_sort) 
+
+
+
+#binding dataframes
+soc_full_mod_df <- rbind.data.frame(soc0_mod_sort, soc1_mod_sort)
+```
+
+```{r}
+soc_full_mod_df <- read.csv(".\\Exported_CSVs\\comb_soc_data_cleaned.csv")
+```
+
+
+```{r duration-based vars}
+soc_full_mod_df <- soc_full_mod_df %>% filter(total_duration != 0)
+sel_col_names <- names(soc_full_mod_df)[1:12]
+sub_cols <- c("total_duration", "unique_session", "high_speed_distance",
+              sel_col_names) 
+mini_df <- soc_full_mod_df[c(1:100), sub_cols] 
+
+dur_prep_mod_df <-  mini_df %>% 
+  filter(total_duration != 0) %>%
+  arrange(unique_session) 
+cols_to_drop_dur_calc <- c("binary")
+include_cols <- dur_prep_mod_df %>% select_if(is.numeric) %>% names()
+include_cols <- c("unique_session", include_cols)
+
+dur_prep_mod_df <- dur_prep_mod_df %>% 
+  select(contains(include_cols)) %>%
+  select(-contains(cols_to_drop_dur_calc)) 
+
+full_df <- as.data.frame(matrix(ncol=dim(dur_prep_mod_df)[2]))
+names(full_df) <- names(dur_prep_mod_df)
+
+for(i in 1:length(dur_prep_mod_df)){
+  df_non_num <- dur_prep_mod_df %>% select_if(is.character) 
+  df_num <- dur_prep_mod_df %>% select_if(is.numeric) 
+  df_num_over_time <- (df_num)/dur_prep_mod_df$total_duration
+  full_df <- cbind(df_num_over_time) #,df_non_num)
+}
+
+names(full_df) <- paste0(names(full_df), "_per_min") 
+
+comb_dur_df <- cbind.data.frame(mini_df, full_df) 
+```
+
+```{r subset data for modeling}
+not_include_vec <- comb_dur_df %>% select_if(is.character) %>% names()
+not_include_vec <- c("high_speed_distance_per_min", not_include_vec)
+
+model_df <- comb_dur_df %>% filter(high_speed_distance != 0) %>%
+  select(-contains(not_include_vec)) %>%
+  #filter(high_speed_distance >= low_lim) %>% #& total_high_speed_distance <= up_lim)  %>%
+  select(all_of("high_speed_distance"), everything()) 
+```
+
+```{r partitioning data}
+sum(is.na(model_df)) #check NA values
+
+set.seed(33) # Set Seed
+split_ratio <- 0.75
+train_row_ind <- sample(x=nrow(model_df), 
+                     size=floor(nrow(model_df) * split_ratio))
+
+# Split the data into training and testing sets
+train_data <- model_df[train_row_ind, ]
+test_data <- model_df[-train_row_ind, ]
+
+train_response = train_data[,1]
+train_x = train_data[,-1]
+test_response = test_data[,1]
+test_x = test_data[,-1]
+
+response <- model_df$high_speed_distance
+#train_response <- response[train_row_ind]
+#test_response <- response[train_row_ind]
+
+# Create training data XGBOOST
+dtrain <- xgb.DMatrix(data = as.matrix(train_data[ ,-1]), label = train_response)
+# Create test data XGBOOST
+dtest <- xgb.DMatrix(data = as.matrix(test_data[ ,-1]),label = test_response)
+```
+
+
+
+## UPDATED MODELING - XGBoost and model tuning
+
+```{r model using best training test split - reg and z-score, results='hide'}
+selected_sport <- "Combined Soccer"
+xgb_viz_title <- "XGBoost Model Actual vs Predicted High Speed Distance (covered)"
+
+bst_split_mod_pre_tune <- xgboost(
+    data = dtrain,  #as.matrix(train_data[, -1])
+    label = train_data$high_speed_distance, #train_data$high_speed_distance
+    booster = "gblinear",  # Use linear booster for regression
+    objective = "reg:linear",  # Specify regression as the objective
+    eval_metric = "rmse",  # Evaluation metric (Root Mean Squared Error)
+    nrounds = 2000,  
+    print_every_n = 20, 
+    eta = 0.01)
+
+# Make predictions on the test data
+bst_preds_pre_tune <- predict(bst_split_mod_pre_tune, dtest) #as.matrix(test_data[, -1])
+  
+bst_actual_pre_tune <- test_data$high_speed_distance
+  
+# Calculate RMSE (Root Mean Squared Error) for model evaluation
+rmse <- sqrt(mean((bst_preds_pre_tune - test_data$high_speed_distance)^2))
+#You can also inspect the model's feature importance if needed
+importance <- xgb.importance(feature_names = colnames(as.matrix(train_data[, -1])),
+                             model = bst_split_mod_pre_tune)
+
+#preds1 <- predict(bst_1, dtest)
+bst_split_pred_data_pre_tune <- cbind.data.frame(bst_preds_pre_tune, bst_actual_pre_tune)
+  
+names(bst_split_pred_data_pre_tune) <- c("predicted", "actual")
+
+# calc difference as actual-predicted
+bst_split_pred_data_pre_tune$difference <- bst_split_pred_data_pre_tune$actual - bst_split_pred_data_pre_tune$predicted 
+bst_split_pred_data_pre_tune$time <- "pre-tune"
+
+pre_tune_diff_summary_soc1 <- summary(bst_split_pred_data_pre_tune$difference)
+
+# bst_split_pred_data_pre_tune %>% 
+#   filter(bst_split_pred_data_pre_tune$difference == max(bst_split_pred_data_pre_tune$difference) | 
+#          bst_split_pred_data_pre_tune$difference == min(bst_split_pred_data_pre_tune$difference))  
+
+# DATA VIZ
+pred_viz_pre_tune <- ggplot(bst_split_pred_data_pre_tune, aes(x = predicted, y = actual)) + geom_point(color=nd_navy) +
+  geom_smooth(color=nd_gold) + theme_minimal() +
+  labs(title = xgb_viz_title, 
+    subtitle = paste(selected_sport, "Data;","Duration-Based Model", sep=" "))
+
+
+ggplot(bst_split_pred_data_pre_tune, aes(x = predicted, y = actual)) +
+  geom_point(color=nd_navy) +
+  geom_smooth(color=nd_gold) + theme_minimal() +
+  labs(title = xgb_viz_title, 
+    subtitle = paste(selected_sport, "Data;","Duration-Based Model", sep=" ")) 
+#+ ylim(0,5000) + xlim(-5000,8000)
+
+viz_time <- "pre-tuning"
+diff_hist_pre_tune <- ggplot(bst_split_pred_data_pre_tune,
+       aes(x = difference, #fill = color_condition_wt,
+           y = after_stat(count / sum(count)))) +
+  geom_histogram(fill = nd_navy, alpha=0.5) +
+  labs(title = "Histogram of Difference between Prediction vs Actual",
+       subtitle= paste0(selected_sport, " High Speed Distance ", viz_time),
+       x = "Difference between Prediction and Actual",
+       y = "Percent Frequency") +
+  theme_minimal() #+ ylim(0, .25) + xlim(-750, 500)
+```
+

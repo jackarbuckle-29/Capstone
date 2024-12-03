@@ -1,0 +1,894 @@
+---
+title: "PostTune_Code_032124"
+author: "Kaylin Slattery"
+date: "2024-03-21"
+output: html_document
+---
+# set up 
+```{r packages warnings=FALSE, error=FALSE, message=FALSE}
+library(tidyverse)
+library(DescTools)
+library(janitor)
+library(ggplot2)
+library(jpeg)
+# library(chron)
+# library(lubridate)
+# library(anytime)
+library(ggpubr)
+# library(devtools) 
+#install_github("AppliedDataSciencePartners/xgboostExplainer")
+library(xgboost) # Load XGBoost
+library(caret) # Load Caret
+# library(xgboostExplainer) # Load XGboost Explainer
+# library(pROC) # Load proc
+library(SHAPforxgboost) # Load shap for XGBoost
+library(plyr)
+library(Metrics)
+library(kableExtra)
+```
+
+```{r nd colors}
+# setting ND colors 
+nd_navy <- "#0C2340"
+nd_green <- "#00843D"
+nd_gold <- "#C99700"
+```
+
+# Soccer
+### Loading from RDAs
+```{r}
+# load(".\\CRC_RDAs\\comb_soc\\alpha_lambda.rda")
+# #res_db, bst_lambda, bst_alpha, g_5,
+# load(".\\CRC_RDAs\\comb_soc\\bst_final_mod.rda")
+# # bst_final_mod, bst_pred_data, tuned_importance, imp_plot, xgb_imp_df,
+# # full_preds_df, post_tune_mod_pred_viz,
+# # post_tune_mod_pred_viz_2,post_tune_diff_hist
+# load(".\\CRC_RDAs\\comb_soc\\eta.rda")
+# #bst_mod_1, bst_mod_2, bst_mod_3, bst_mod_4, bst_mod_5,g_6, g_7, plot_data,
+# load(".\\CRC_RDAs\\comb_soc\\gamma.rda")
+# # gam_df, bst_gamma,
+# load(".\\CRC_RDAs\\comb_soc\\min_child_max_depth.rda")
+# # res_db, bst_max_depth, bst_min_child, g_2, 
+# load(".\\CRC_RDAs\\comb_soc\\pre_tune_files.rda")
+# # prelim_importance, bst_split_pred_data_pre_tune, pred_viz_pre_tune, diff_hist_pre_tune
+# load(".\\CRC_RDAs\\comb_soc\\sample_colsample.rda")
+# # res_db, bst_col_samp, bst_sub_samp, g_4, 
+
+base_path <- ".\\CRC_RDAs"
+team_dir <- "\\comb_soc"
+file_abr <- "\\"
+file_names <- c("alpha_lambda.rda", "bst_final_mod.rda", 
+                "eta.rda", "gamma.rda", "min_child_max_depth.rda", 
+                "pre_tune_files.rda", "sample_colsample.rda")
+
+file_names_vec <- c()
+
+for (f in seq_along(file_names)){
+  new_name <- paste0(base_path, team_dir, file_abr, file_names[f])
+  file_names_vec <- c(file_names_vec, new_name)
+  
+  load(new_name)
+}
+
+bst_split_pred_data_pre_tune
+bst_pred_data
+full_pred_soc_df <- rbind.data.frame(bst_split_pred_data_pre_tune, bst_pred_data)
+
+dim(bst_pred_data[abs(bst_pred_data$difference) <= 150, ])[1]/(dim(bst_pred_data)[1])
+xgb_imp_df[xgb_imp_df$Feature == "position_name", ] 
+
+
+```
+
+## Post-Tune Evaluation  
+### Important Variables
+```{r}
+# bst_final_mod, bst_pred_data, tuned_importance, imp_plot, xgb_imp_df,
+# full_preds_df, post_tune_mod_pred_viz,
+# post_tune_mod_pred_viz_2,post_tune_diff_hist
+
+xgb_imp_df
+ggplot(data=xgb_imp_df[1:10,], aes(x=Importance, 
+y=reorder(Feature, -Importance, decreasing = TRUE))) + 
+  theme_minimal() + geom_col(fill=nd_navy) +
+  labs(title = "Soccer XGBoost Model Top 10 Most Important Variables", 
+       x = "Importance", y = "Variable") 
+
+#xgb_imp_df[1:10, ]$Feature
+
+xgb_imp_df$z_var_bin <- ifelse(grepl("z", xgb_imp_df$Feature), "z-score", "non-z")
+
+# Now plot using this new column for fill
+ggplot(data=xgb_imp_df[1:10, ], aes(x=Importance,
+                                    y=reorder(Feature, -Importance, decreasing = TRUE))) +
+  theme_minimal() +
+  geom_col(aes(fill=z_var_bin)) +  
+  scale_fill_manual(values=c("z-score"=nd_green, "non-z"=nd_navy)) +
+  labs(title="Top Predictors - Soccer XGBoost", x="Importance", y="Variable")
+
+
+xgb_imp_df[grepl("position", x=xgb_imp_df$Feature),]
+```
+
+### Train RMSE line
+```{r}
+bst_final_mod$evaluation_log %>% 
+  pivot_longer(cols = c(train_rmse), names_to = "phase") %>% 
+  ggplot(aes(x = iter, y = value, color = phase)) + geom_line(color=nd_navy, size=2) + theme_minimal() +
+  labs(title = "Train RMSE - Soccer XGBoost")
+```
+
+### Histogram Pre & Post Tune 
+```{r}
+ggplot(full_pred_soc_df, aes(x = difference, y=..density.., fill = time)) + 
+  geom_histogram(data = subset(full_pred_soc_df, time == "pre-tune"),
+                 alpha = 0.5, position = "identity", binwidth =50) + 
+  geom_histogram(data = subset(full_pred_soc_df, time == "post-tune"),
+                 alpha = 0.5, position = "identity", binwidth = 50) + 
+  scale_fill_manual(values = c("pre-tune" = nd_navy, "post-tune" = nd_green)) + 
+  labs(title = "Overlaying Histograms - Soccer",
+       x = "Residual (Actual - Predicted)", y = "Frequency") + 
+  theme_minimal() + xlim(-1500, 1500)
+```
+
+```{r}
+post <- full_pred_soc_df %>% filter(time == "post-tune")
+dim(post[abs(post$difference) <= 150, ])[1]/(dim(post)[1]) #75.9%
+```
+
+
+## OUTLIER SOCCER
+### Data Set up - outlier instances
+
+```{r}
+soc_z_data <- read.csv(".\\Exported_CSVs\\comb_soc_data_cleaned_with_z.csv")
+
+############################# MODELING PREP ############################# 
+model_df <- soc_z_data %>% 
+  select(!contains(c("unique_session", "name_id", "high_speed_distance_z", "team_gender_z", 
+                     "activity_type_z", "date_z", "location_z"))) %>%
+  filter(high_speed_distance > 0) %>% #& total_high_speed_distance <= up_lim)  %>%
+  select(all_of("high_speed_distance"), everything())
+
+############################# PARTITIONING ############################# 
+set.seed(33) # Set Seed
+split_ratio <- 0.7
+train_row_ind <- sample(x=nrow(model_df), 
+                        size=floor(nrow(model_df) * split_ratio))
+
+# Split the data into training and testing sets
+train_data <- model_df[train_row_ind, ]
+test_data <- model_df[-train_row_ind, ]
+
+train_response = train_data[,1]
+train_x = train_data[,-1]
+test_response = test_data[,1]
+test_x = test_data[,-1]
+
+response <- model_df$high_speed_distance
+
+# Create training data XGBOOST
+dtrain <- xgb.DMatrix(data = as.matrix(train_data[ ,-1]), label = train_response)
+# Create test data XGBOOST
+dtest <- xgb.DMatrix(data = as.matrix(test_data[ ,-1]),label = test_response)
+```
+
+### OUTLIER COMPARISON
+```{r fig.align="center", fig.width = 12}
+cols_df <- test_data
+post_tune_res <- full_pred_soc_df %>% filter(time == "post-tune")
+
+test_info_df <- merge(cols_df, post_tune_res, 
+      by.x = "high_speed_distance", by.y = "actual",
+      all.x=TRUE)
+
+test_info_df %>% select()
+test_info_df %>% select(contains("ima_free_running_total_time"))
+
+soc_top_vars_10 <- c(xgb_imp_df[1:10, ]$Feature)
+key_vars <- c("high_speed_distance", "difference", "predicted", "position_name",
+              soc_top_vars_10)
+key_vars %in% names(test_info_df)
+
+############################################EVALUATE LATER######################################
+key_vars[9] <- "ima_free_running_total_time_1_0"
+#test_data$ima_free_running_total_time_1_0
+
+accurate_avg_df <- test_info_df %>%
+  filter(abs(difference) <= 250) %>%
+    select(all_of(key_vars)) %>% 
+  colMeans() %>% as.data.frame()
+names(accurate_avg_df) <- c("Average Value")
+accurate_avg_df$Variable <- rownames(accurate_avg_df)
+
+outlier_df <- test_info_df %>% 
+  filter(abs(difference)>500) %>% 
+  select(all_of(c(key_vars)))
+
+outlier_df
+
+# ggplot(outlier_df,
+#        aes(x = predicted, y = high_speed_distance)) +
+#   geom_point(color=nd_navy) +
+#   #geom_smooth(color=nd_gold) + 
+#   theme_minimal() +
+#   labs(title = "Women's Lax Prediction Outlier Instances") + ylim(0,2000)
+# 
+# names(outlier_df)
+avg_vals_df <- accurate_avg_df %>%
+  pivot_wider(names_from = "Variable", values_from = "Average Value")
+#rownames(avg_vals_df) <- c("average")
+avg_vals_df$row <- c("average")
+outlier_df$row <- c("outlier")
+
+
+# tmp_df <- matrix(nrow=1, ncol=3) %>% as.data.frame()
+# names(tmp_df) <- names(outlier_df)[1:3]
+# 
+# t_df <- as.data.frame(t(accurate_avg_df$`Average Value`))
+# names(t_df) <- accurate_avg_df$Variable
+# new_df <- cbind.data.frame(tmp_df, t_df)
+# rownames(new_df) <- c("average")
+# 
+# 
+
+# outlier_df %>% select_if(is.numeric) %>% pivot_longer(cols = everything(), 
+#                             names_to = "variable", 
+#                             values_to = "values")
+
+out_plot_df <- rbind.data.frame(avg_vals_df, outlier_df) 
+names_vec <- names(out_plot_df)[5:14]
+viz_list <- vector("list", length(names_vec))
+
+for (i in seq_along(names_vec)){
+  var_interest <- names_vec[i]
+  col_avg <- accurate_avg_df[accurate_avg_df$Variable == var_interest, ]$`Average Value`
+  title_text <- paste0(var_interest)
+  
+  print(col_avg)
+  
+  viz_list[[i]] <- ggplot(data=out_plot_df) +
+    geom_point(aes_string(y=var_interest,
+                 x="abs(difference)"), size=2, color = nd_green) +
+  geom_hline(aes(yintercept=col_avg), color = nd_gold, size=2) +
+  theme_minimal() + theme(plot.title = element_text(size=8)) +
+  labs(title = title_text, x="", y="") + xlim(500, 1000)#,
+       #x="Prediction Residual (Absolute Value)",
+       #y = var_interest)
+}
+
+# as.factor(out_plot_df$position_name)
+
+viz_list[[1]]
+viz_list[[2]]
+
+ggarrange(viz_list[[1]], viz_list[[2]], viz_list[[3]], 
+          viz_list[[4]], viz_list[[5]], viz_list[[6]],
+          viz_list[[7]], viz_list[[8]], viz_list[[9]],
+          viz_list[[10]], 
+          ncol=5, nrow=2, widths = 0.5, heights = 0.5)
+
+# col_avg <- accurate_avg_df[accurate_avg_df$Variable == "player_load_band_3_total_player_load_z", ]$`Average Value`
+# 
+# 
+# 
+
+out_plot_df$position_name
+ggplot(data=out_plot_df) +
+  geom_point(aes(y=rhie_total_bouts,
+                 x=abs(difference)), size=2, color = as.factor(out_plot_df$position_name)) +
+  geom_line(aes(y=col_avg, x=abs(difference)), color = nd_gold, size=2) +
+  theme_minimal() +
+  labs(title = title_text,
+       x="Prediction Residual (Absolute Value)",
+       y = var_interest, size=8)
+```
+
+
+# Women's Lacrosse
+## Loading from RDAs
+```{r}
+load(".\\CRC_RDAs\\lax1_r2\\lax1_alpha_lambda.rda")
+#res_db, bst_lambda, bst_alpha, g_5,
+load(".\\CRC_RDAs\\lax1_r2\\lax1_bst_final_mod.rda")
+# bst_final_mod, bst_pred_data, tuned_importance, imp_plot, xgb_imp_df,
+# lax1_full_preds_df, post_tune_mod_pred_viz,
+# post_tune_mod_pred_viz_2,post_tune_diff_hist
+load(".\\CRC_RDAs\\lax1_r2\\lax1_eta.rda")
+#bst_mod_1, bst_mod_2, bst_mod_3, bst_mod_4, bst_mod_5,g_6, g_7, plot_data,
+load(".\\CRC_RDAs\\lax1_r2\\lax1_gamma.rda")
+# gam_df, bst_gamma,
+load(".\\CRC_RDAs\\lax1_r2\\lax1_min_child_max_depth.rda")
+# res_db, bst_max_depth, bst_min_child, g_2, 
+load(".\\CRC_RDAs\\lax1_r2\\lax1_pre_tune_files.rda")
+# prelim_importance, bst_split_pred_data_pre_tune, pred_viz_pre_tune, diff_hist_pre_tune
+load(".\\CRC_RDAs\\lax1_r2\\lax1_sample_colsample.rda")
+# res_db, bst_col_samp, bst_sub_samp, g_4, 
+```
+
+## Post-Tune Evaluation  
+### Important Variables
+```{r}
+# bst_final_mod, bst_pred_data, tuned_importance, imp_plot, xgb_imp_df,
+# lax1_full_preds_df, post_tune_mod_pred_viz,
+# post_tune_mod_pred_viz_2,post_tune_diff_hist
+
+xgb_imp_df
+ggplot(data=xgb_imp_df[1:10,], aes(x=Importance, 
+                                                       y=reorder(Feature, -Importance, decreasing = TRUE))) + 
+  theme_minimal() + geom_col(fill=nd_green) +
+  labs(title = "XG Boost Model Top 5 Most Important Variables", 
+       x = "Importance", y = "Variable") 
+
+xgb_imp_df[1:10, ]$Feature
+```
+
+### Train RMSE line
+```{r}
+bst_final_mod$evaluation_log %>% 
+  pivot_longer(cols = c(train_rmse), names_to = "phase") %>% 
+  ggplot(aes(x = iter, y = value, color = phase)) + geom_line(color=nd_navy, size=2) + theme_minimal() +
+  labs(title = "Train RMSE - lax1 XGBoost")
+```
+
+### Histogram Pre & Post-Tune
+```{r}
+ggplot(lax1_full_preds_df, aes(x = difference, y=..density.., fill = time)) + 
+  geom_histogram(data = subset(lax1_full_preds_df, time == "pre-tune"),
+                 alpha = 0.5, position = "identity", binwidth =50) + 
+  geom_histogram(data = subset(lax1_full_preds_df, time == "post-tune"),
+                 alpha = 0.5, position = "identity", binwidth = 50) + 
+  scale_fill_manual(values = c("pre-tune" = nd_navy, "post-tune" = nd_green)) + 
+  labs(title = "Overlaying Histograms - lax1",
+       x = "Residual (Actual - Predicted)", y = "Frequency") + 
+  theme_minimal() + xlim(-1025, 1025)
+```
+
+### percent of preds within distance
+```{r}
+lax1_post <- lax1_full_preds_df %>% filter(time == "post-tune")
+dim(lax1_post[abs(lax1_post$difference) <= 150, ])[1]/(dim(lax1_post)[1]) #75.9%
+```
+
+
+## Individual Prediction Instances
+### data set up 
+```{r}
+lax1_full_preds_df
+lax1_data <- read.csv(".\\Exported_CSVs\\lax1_data_cleaned.csv") 
+#lax1_data <- read.csv(".\\Exported_CSVs\\lax1_data_cleaned.csv") 
+
+lax1_data <- lax1_data %>%
+  dplyr::rename(high_speed_distance=high_speed_running_distance_session)
+
+not_include_indoor_vec <- c("duration", "distance", "meta", "total_effort", 
+                            "heart_rate", "hr", "velocity", "acceleration",
+                            "deceleration", "metre", "meterage",
+                            "exertion_index","max_vel_max", 
+                            "footstrikes", "running_series_count", 
+                            "running_imbalance")
+
+lax1_indoor_full_df <- lax1_data %>%
+  filter(location=="indoor") %>%
+  select(-contains(not_include_indoor_vec))
+
+var_to_pred <- "high_speed_distance"
+
+set.seed(33) #setting seed for reproducing same samples
+
+#selecting only outdoor rows to predict high speed distance
+lax1_outdoor_df <- lax1_data %>%
+  filter(location == "outdoor")
+sample_rows_2k <- sample(dim(lax1_outdoor_df)[1], 2000)
+
+# creating a model subset for testing the model logic before 
+# sub_model_df <- lax1_data[sample_rows_2k, ]  %>% 
+#   select(all_of(c( "high_speed_distance", hypo_cols_vec)))
+
+# lax1_mod_df <- lax1_data %>% 
+#   select(all_of(c(var_to_pred, hypo_cols_vec)))
+# 
+# lax1_sub_model_df <- lax1_data %>% 
+#   select(all_of(c("name_id", "date", var_to_pred, hypo_cols_vec, second_set_hypos)))
+
+num_col_names <- lax1_data %>% 
+  select_if(is.numeric) %>% 
+  names()
+
+num_col_names_indoor <- num_col_names[num_col_names %in% names(lax1_indoor_full_df)] 
+
+to_remove_vec <- c("unix", "position_name")
+
+lax1_sub_df <- lax1_data %>% 
+  select(all_of(c("unique_session", "name_id", num_col_names_indoor))) %>%
+  select(-contains(to_remove_vec))
+
+
+############################# PLAYER Z-SCORES ############################# 
+players <- unique(lax1_data$name_id)
+z_prep_mod_df <- lax1_sub_df
+full_df <- as.data.frame(matrix(ncol=dim(z_prep_mod_df)[2]))
+names(full_df) <- names(z_prep_mod_df)
+
+for(i in 1:length(players)){
+  player_df <- z_prep_mod_df[z_prep_mod_df$name_id == players[i],]
+  
+  df_non_num <- player_df %>% select_if(is.character)
+  df_num <- player_df %>% select_if(is.numeric)
+  
+  df_num <- scale(df_num)
+  combined <- cbind(df_non_num, df_num)
+  full_df <- rbind(full_df, combined)
+}
+
+full_df <- full_df[-1,]
+names(full_df) <- paste0(names(full_df), "_z") 
+z_score_df <- full_df %>% select(-contains(c("name_id")))
+
+############################# MERGING Z AND REGULAR DATA ############################# 
+comb_z_df <- merge(lax1_data, z_score_df, 
+                   by.x = "unique_session", by.y = "unique_session_z",
+                   all.x=TRUE)
+#head(comb_z_df)
+
+num_col_names_indoor <- num_col_names[num_col_names %in% names(lax1_indoor_full_df)]
+to_remove_vec <- c("unix", "position_name")
+
+test_df <- lax1_data %>%
+  select(all_of(c("unique_session","name_id", "high_speed_distance",
+                  num_col_names_indoor))) %>%
+  select(-contains(to_remove_vec))
+
+comb_z_df_outdoor <- comb_z_df %>% filter(high_speed_distance != 0)
+low_lim <- quantile(comb_z_df_outdoor$high_speed_distance, .10)
+up_lim <- quantile(comb_z_df_outdoor$high_speed_distance, .90)
+
+include_mod_cols <- c("high_speed_distance", names(test_df), names(z_score_df))
+comb_z_df_mod <- comb_z_df_outdoor[, names(comb_z_df_outdoor) %in% include_mod_cols]
+
+
+############################# MODELING PREP ############################# 
+model_df <- comb_z_df_mod %>% 
+  select(!contains(c("unique_session", "name_id", "high_speed_distance_z", "team_gender_z", 
+                     "activity_type_z", "date_z", "location_z"))) %>%
+  filter(high_speed_distance >= low_lim) %>% #& total_high_speed_distance <= up_lim)  %>%
+  select(all_of("high_speed_distance"), everything())
+
+############################# PARTITIONING ############################# 
+set.seed(33) # Set Seed
+split_ratio <- 0.7
+train_row_ind <- sample(x=nrow(model_df), 
+                        size=floor(nrow(model_df) * split_ratio))
+
+# Split the data into training and testing sets
+train_data <- model_df[train_row_ind, ]
+test_data <- model_df[-train_row_ind, ]
+
+train_response = train_data[,1]
+train_x = train_data[,-1]
+test_response = test_data[,1]
+test_x = test_data[,-1]
+
+response <- model_df$high_speed_distance
+
+# Create training data XGBOOST
+dtrain <- xgb.DMatrix(data = as.matrix(train_data[ ,-1]), label = train_response)
+# Create test data XGBOOST
+dtest <- xgb.DMatrix(data = as.matrix(test_data[ ,-1]),label = test_response)
+```
+
+### OUTLIER COMPARISON
+```{r fig.align="center", fig.width = 12}
+cols_df <- test_data
+post_tune_res <- lax1_full_preds_df %>% filter(time == "post-tune")
+
+test_info_df <- merge(cols_df, post_tune_res, 
+      by.x = "high_speed_distance", by.y = "actual",
+      all.x=TRUE)
+
+test_info_df %>% select()
+
+lax1_top_vars_10 <- c(xgb_imp_df[1:10, ]$Feature)
+
+accurate_avg_df <- test_info_df %>% filter(difference <= 250) %>%
+    select(all_of(c("high_speed_distance", "difference", "predicted", lax1_top_vars_10))) %>% 
+  colMeans() %>% as.data.frame()
+names(accurate_avg_df) <- c("Average Value")
+accurate_avg_df$Variable <- rownames(accurate_avg_df)
+
+outlier_df <- test_info_df %>% 
+  filter(abs(difference)>500) %>% 
+  select(all_of(c("high_speed_distance", "difference", "predicted", lax1_top_vars_10)))
+
+outlier_df
+
+ggplot(outlier_df,
+       aes(x = predicted, y = high_speed_distance)) +
+  geom_point(color=nd_navy) +
+  #geom_smooth(color=nd_gold) + 
+  theme_minimal() +
+  labs(title = "Women's Lax Prediction Outlier Instances") + ylim(0,2000)
+
+names(outlier_df)
+avg_vals_df <- accurate_avg_df %>% 
+  pivot_wider(names_from = "Variable", values_from = "Average Value")
+#rownames(avg_vals_df) <- c("average")
+avg_vals_df$row <- c("average")
+outlier_df$row <- c("outlier")
+# tmp_df <- matrix(nrow=1, ncol=3) %>% as.data.frame()
+# names(tmp_df) <- names(outlier_df)[1:3]
+# 
+# t_df <- as.data.frame(t(accurate_avg_df$`Average Value`))
+# names(t_df) <- accurate_avg_df$Variable
+# new_df <- cbind.data.frame(tmp_df, t_df)
+# rownames(new_df) <- c("average")
+# 
+# 
+
+outlier_df %>% select_if(is.numeric) %>% pivot_longer(cols = everything(), 
+                            names_to = "variable", 
+                            values_to = "values")
+
+out_plot_df <- rbind.data.frame(avg_vals_df, outlier_df) 
+names_vec <- names(out_plot_df)[4:13]
+viz_list <- vector("list", length(names_vec))
+
+for (i in seq_along(names_vec)){
+  var_interest <- names_vec[i]
+  col_avg <- accurate_avg_df[accurate_avg_df$Variable == var_interest, ]$`Average Value`
+  title_text <- paste0(var_interest)
+  
+  print(col_avg)
+  
+  viz_list[[i]] <- ggplot(data=out_plot_df) +
+    geom_point(aes_string(y=var_interest,
+                 x="abs(difference)"), size=2, color = nd_green) +
+  geom_hline(aes(yintercept=col_avg), color = nd_gold, size=2) +
+  theme_minimal() + theme(plot.title = element_text(size=8)) +
+  labs(title = title_text, x="", y="")#,
+       #x="Prediction Residual (Absolute Value)",
+       #y = var_interest)
+}
+
+
+viz_list[[1]]
+viz_list[[2]]
+
+ggarrange(viz_list[[1]], viz_list[[2]], viz_list[[3]], 
+          viz_list[[4]], viz_list[[5]], viz_list[[6]],
+          viz_list[[7]], viz_list[[8]], viz_list[[9]],
+          viz_list[[10]], 
+          ncol=5, nrow=2, widths = 0.5, heights = 0.5)
+
+col_avg <- accurate_avg_df[accurate_avg_df$Variable == "player_load_band_3_total_player_load_z", ]$`Average Value`
+
+
+
+ggplot(data=out_plot_df) +
+  geom_point(aes(y=player_load_band_3_total_player_load_z,
+                 x=abs(difference)), size=2, color = nd_green) +
+  geom_line(aes(y=col_avg, x=abs(difference)), color = nd_gold, size=2) + 
+  theme_minimal() + 
+  labs(title = title_text, 
+       x="Prediction Residual (Absolute Value)", 
+       y = var_interest, size=8)
+
+
+```
+
+
+# Men's Lacrosse
+### Loading from RDAs
+```{r}
+load(".\\CRC_RDAs\\lax0_r2\\lax0_alpha_lambda.rda")
+#res_db, bst_lambda, bst_alpha, g_5,
+load(".\\CRC_RDAs\\lax0_r2\\lax0_bst_final_mod.rda")
+# bst_final_mod, bst_pred_data, tuned_importance, imp_plot, xgb_imp_df,
+# lax0_full_preds_df, post_tune_mod_pred_viz,
+# post_tune_mod_pred_viz_2,post_tune_diff_hist
+load(".\\CRC_RDAs\\lax0_r2\\lax0_eta.rda")
+#bst_mod_1, bst_mod_2, bst_mod_3, bst_mod_4, bst_mod_5,g_6, g_7, plot_data,
+load(".\\CRC_RDAs\\lax0_r2\\lax0_gamma.rda")
+# gam_df, bst_gamma,
+load(".\\CRC_RDAs\\lax0_r2\\lax0_min_child_max_depth.rda")
+# res_db, bst_max_depth, bst_min_child, g_2, 
+load(".\\CRC_RDAs\\lax0_r2\\lax0_pre_tune_files.rda")
+# prelim_importance, bst_split_pred_data_pre_tune, pred_viz_pre_tune, diff_hist_pre_tune
+load(".\\CRC_RDAs\\lax0_r2\\lax0_sample_colsample.rda")
+# res_db, bst_col_samp, bst_sub_samp, g_4, 
+```
+
+
+## Post-Tune Evaluation
+### Important Variables
+```{r}
+# bst_final_mod, bst_pred_data, tuned_importance, imp_plot, xgb_imp_df,
+# lax0_full_preds_df, post_tune_mod_pred_viz,
+# post_tune_mod_pred_viz_2,post_tune_diff_hist
+
+xgb_imp_df
+ggplot(data=xgb_imp_df[1:10,], aes(x=Importance, 
+                                                       y=reorder(Feature, -Importance, decreasing = TRUE))) + 
+  theme_minimal() + geom_col(fill=nd_navy) +
+  labs(title = "XG Boost Model Top 5 Most Important Variables", 
+       x = "Importance", y = "Variable") 
+
+mlax_imp_10 <- xgb_imp_df[1:10, ]$Feature
+
+wlax_imp_10 <- c(
+   "player_load_band_3_total_player_load_z"           , "player_load_band_2_total_player_load_z"           
+, "edi_z"                                            
+, "average_player_load_slow_session_z"               
+, "player_load_slow_z"                               
+, "pl_hi_sess_z"                                     
+, "ima_7_o_clock_low_1_0_z"                          
+,"player_load_1d_up_z"                              
+, "player_load_band_2_average_effort_count_session_z"
+, "average_player_load_slow_z" 
+)
+
+wlax_imp_10[wlax_imp_10 %in% mlax_imp_10]
+```
+
+### Train RMSE Line
+```{r}
+bst_final_mod$evaluation_log %>% 
+  pivot_longer(cols = c(train_rmse), names_to = "phase") %>% 
+  ggplot(aes(x = iter, y = value, color = phase)) + geom_line(color=nd_navy, size=2) + theme_minimal() +
+  labs(title = "Train RMSE - Lax0 XGBoost")
+
+post_df <- lax0_full_preds_df %>% 
+  filter(time == "post-tune") 
+
+summary(post_df$difference)
+```
+
+
+### Histogram Pre & Post-Tune
+```{r}
+ggplot(lax0_full_preds_df, aes(x = difference, y=..density.., fill = time)) + 
+  geom_histogram(data = subset(lax0_full_preds_df, time == "pre-tune"),
+                 alpha = 0.5, position = "identity", binwidth =50) + 
+  geom_histogram(data = subset(lax0_full_preds_df, time == "post-tune"),
+                 alpha = 0.5, position = "identity", binwidth = 50) + 
+  scale_fill_manual(values = c("pre-tune" = nd_navy, "post-tune" = nd_green)) + 
+  labs(title = "Overlaying Histograms - Lax0",
+       x = "Residual (Actual - Predicted)", y = "Frequency") + 
+  theme_minimal() 
+```
+
+### Percent of Preds within distnce
+```{r}
+lax0_post <- lax0_full_preds_df %>% filter(time == "post-tune")
+dim(lax0_post[abs(lax0_post$difference) <= 150, ])[1]/(dim(lax0_post)[1]) #75.9%
+```
+
+## Individual Prediction Instances
+### data set up 
+```{r}
+lax0_full_preds_df
+lax0_data <- read.csv(".\\Exported_CSVs\\lax0_data_cleaned.csv") 
+
+lax0_z_data <- read.csv(".\\Exported_CSVs\\lax0_data_cleaned_with_z.csv") 
+
+#lax1_data <- read.csv(".\\Exported_CSVs\\lax1_data_cleaned.csv") 
+
+lax0_data <- lax0_data %>%
+  dplyr::rename(high_speed_distance_perc=high_speed_distance, 
+                high_speed_distance=high_speed_distance_covered)
+
+
+not_include_indoor_vec <- c("duration", "distance", "meta", "total_effort", 
+                            "heart_rate", "hr", "velocity", "acceleration",
+                            "deceleration", "metre", "meterage",
+                            "exertion_index","max_vel_max", 
+                            "footstrikes", "running_series_count", 
+                            "running_imbalance")
+
+lax0_indoor_full_df <- lax0_data %>%
+  filter(location=="indoor") %>%
+  select(-contains(not_include_indoor_vec))
+
+var_to_pred <- "high_speed_distance"
+
+set.seed(33) #setting seed for reproducing same samples
+
+#selecting only outdoor rows to predict high speed distance
+lax0_outdoor_df <- lax0_data %>%
+  filter(location == "outdoor")
+sample_rows_2k <- sample(dim(lax1_outdoor_df)[1], 2000)
+
+# creating a model subset for testing the model logic before 
+# sub_model_df <- lax1_data[sample_rows_2k, ]  %>% 
+#   select(all_of(c( "high_speed_distance", hypo_cols_vec)))
+
+# lax1_mod_df <- lax1_data %>% 
+#   select(all_of(c(var_to_pred, hypo_cols_vec)))
+# 
+# lax1_sub_model_df <- lax1_data %>% 
+#   select(all_of(c("name_id", "date", var_to_pred, hypo_cols_vec, second_set_hypos)))
+
+num_col_names <- lax0_data %>% 
+  select_if(is.numeric) %>% 
+  names()
+
+num_col_names_indoor <- num_col_names[num_col_names %in% names(lax0_indoor_full_df)] 
+
+to_remove_vec <- c("unix", "position_name")
+
+lax0_sub_df <- lax0_data %>% 
+  select(all_of(c("unique_session", "name_id", num_col_names_indoor))) %>%
+  select(-contains(to_remove_vec))
+
+
+############################# PLAYER Z-SCORES ############################# 
+players <- unique(lax0_data$name_id)
+z_prep_mod_df <- lax0_sub_df
+full_df <- as.data.frame(matrix(ncol=dim(z_prep_mod_df)[2]))
+names(full_df) <- names(z_prep_mod_df)
+
+for(i in 1:length(players)){
+  player_df <- z_prep_mod_df[z_prep_mod_df$name_id == players[i],]
+  
+  df_non_num <- player_df %>% select_if(is.character)
+  df_num <- player_df %>% select_if(is.numeric)
+  
+  df_num <- scale(df_num)
+  combined <- cbind(df_non_num, df_num)
+  full_df <- rbind(full_df, combined)
+}
+
+full_df <- full_df[-1,]
+names(full_df) <- paste0(names(full_df), "_z") 
+z_score_df <- full_df %>% select(-contains(c("name_id")))
+
+############################# MERGING Z AND REGULAR DATA ############################# 
+comb_z_df <- merge(lax1_data, z_score_df, 
+                   by.x = "unique_session", by.y = "unique_session_z",
+                   all.x=TRUE)
+#head(comb_z_df)
+
+num_col_names_indoor <- num_col_names[num_col_names %in% names(lax1_indoor_full_df)]
+to_remove_vec <- c("unix", "position_name")
+
+test_df <- lax1_data %>%
+  select(all_of(c("unique_session","name_id", "high_speed_distance",
+                  num_col_names_indoor))) %>%
+  select(-contains(to_remove_vec))
+
+comb_z_df_outdoor <- comb_z_df %>% filter(high_speed_distance != 0)
+low_lim <- quantile(comb_z_df_outdoor$high_speed_distance, .10)
+up_lim <- quantile(comb_z_df_outdoor$high_speed_distance, .90)
+
+include_mod_cols <- c("high_speed_distance", names(test_df), names(z_score_df))
+comb_z_df_mod <- comb_z_df_outdoor[, names(comb_z_df_outdoor) %in% include_mod_cols]
+
+
+############################# MODELING PREP ############################# 
+model_df <- lax0_z_data %>% 
+  select(!contains(c("unique_session", "name_id", "high_speed_distance_z", "team_gender_z", 
+                     "activity_type_z", "date_z", "location_z"))) %>%
+  filter(high_speed_distance >= low_lim) %>% #& total_high_speed_distance <= up_lim)  %>%
+  select(all_of("high_speed_distance"), everything())
+
+############################# PARTITIONING ############################# 
+set.seed(33) # Set Seed
+split_ratio <- 0.7
+train_row_ind <- sample(x=nrow(model_df), 
+                        size=floor(nrow(model_df) * split_ratio))
+
+# Split the data into training and testing sets
+train_data <- model_df[train_row_ind, ]
+test_data <- model_df[-train_row_ind, ]
+
+train_response = train_data[,1]
+train_x = train_data[,-1]
+test_response = test_data[,1]
+test_x = test_data[,-1]
+
+response <- model_df$high_speed_distance
+
+# Create training data XGBOOST
+dtrain <- xgb.DMatrix(data = as.matrix(train_data[ ,-1]), label = train_response)
+# Create test data XGBOOST
+dtest <- xgb.DMatrix(data = as.matrix(test_data[ ,-1]),label = test_response)
+```
+
+### OUTLIER COMPARISON
+```{r fig.align="center", fig.width = 12}
+cols_df <- test_data
+post_tune_res <- lax0_full_preds_df %>% filter(time == "post-tune")
+
+test_info_df <- merge(cols_df, post_tune_res, 
+      by.x = "high_speed_distance", by.y = "actual",
+      all.x=TRUE)
+
+test_info_df %>% select()
+
+lax0_top_vars_10 <- c(xgb_imp_df[1:10, ]$Feature)
+
+accurate_avg_df <- test_info_df %>% filter(difference <= 250) %>%
+    select(all_of(c("high_speed_distance", "difference", "predicted", lax0_top_vars_10))) %>% 
+  colMeans() %>% as.data.frame()
+names(accurate_avg_df) <- c("Average Value")
+accurate_avg_df$Variable <- rownames(accurate_avg_df)
+
+outlier_df <- test_info_df %>% 
+  filter(abs(difference)>500) %>% 
+  select(all_of(c("high_speed_distance", "difference", "predicted", lax0_top_vars_10)))
+
+outlier_df
+
+# ggplot(outlier_df,
+#        aes(x = predicted, y = high_speed_distance)) +
+#   geom_point(color=nd_navy) +
+#   #geom_smooth(color=nd_gold) + 
+#   theme_minimal() +
+#   labs(title = "Women's Lax Prediction Outlier Instances") + ylim(0,2000)
+# 
+# names(outlier_df)
+avg_vals_df <- accurate_avg_df %>%
+  pivot_wider(names_from = "Variable", values_from = "Average Value")
+#rownames(avg_vals_df) <- c("average")
+avg_vals_df$row <- c("average")
+outlier_df$row <- c("outlier")
+
+
+# tmp_df <- matrix(nrow=1, ncol=3) %>% as.data.frame()
+# names(tmp_df) <- names(outlier_df)[1:3]
+# 
+# t_df <- as.data.frame(t(accurate_avg_df$`Average Value`))
+# names(t_df) <- accurate_avg_df$Variable
+# new_df <- cbind.data.frame(tmp_df, t_df)
+# rownames(new_df) <- c("average")
+# 
+# 
+
+# outlier_df %>% select_if(is.numeric) %>% pivot_longer(cols = everything(), 
+#                             names_to = "variable", 
+#                             values_to = "values")
+
+out_plot_df <- rbind.data.frame(avg_vals_df, outlier_df) 
+names_vec <- names(out_plot_df)[4:13]
+viz_list <- vector("list", length(names_vec))
+
+for (i in seq_along(names_vec)){
+  var_interest <- names_vec[i]
+  col_avg <- accurate_avg_df[accurate_avg_df$Variable == var_interest, ]$`Average Value`
+  title_text <- paste0(var_interest)
+  
+  print(col_avg)
+  
+  viz_list[[i]] <- ggplot(data=out_plot_df) +
+    geom_point(aes_string(y=var_interest,
+                 x="abs(difference)"), size=2, color = nd_green) +
+  geom_hline(aes(yintercept=col_avg), color = nd_gold, size=2) +
+  theme_minimal() + theme(plot.title = element_text(size=8)) +
+  labs(title = title_text, x="", y="")#,
+       #x="Prediction Residual (Absolute Value)",
+       #y = var_interest)
+}
+
+
+viz_list[[1]]
+viz_list[[2]]
+
+ggarrange(viz_list[[1]], viz_list[[2]], viz_list[[3]], 
+          viz_list[[4]], viz_list[[5]], viz_list[[6]],
+          viz_list[[7]], viz_list[[8]], viz_list[[9]],
+          viz_list[[10]], 
+          ncol=5, nrow=2, widths = 0.5, heights = 0.5)
+
+col_avg <- accurate_avg_df[accurate_avg_df$Variable == "player_load_band_3_total_player_load_z", ]$`Average Value`
+
+
+
+ggplot(data=out_plot_df) +
+  geom_point(aes(y=player_load_band_3_total_player_load_z,
+                 x=abs(difference)), size=2, color = nd_green) +
+  geom_line(aes(y=col_avg, x=abs(difference)), color = nd_gold, size=2) + 
+  theme_minimal() + 
+  labs(title = title_text, 
+       x="Prediction Residual (Absolute Value)", 
+       y = var_interest, size=8)
+```

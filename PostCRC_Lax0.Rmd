@@ -1,0 +1,163 @@
+---
+title: "PostTune_Code_032124"
+author: "Kaylin Slattery"
+date: "2024-03-21"
+output: html_document
+---
+
+```{r packages warnings=FALSE, error=FALSE, message=FALSE}
+library(tidyverse)
+library(DescTools)
+library(janitor)
+library(ggplot2)
+library(jpeg)
+# library(chron)
+# library(lubridate)
+# library(anytime)
+library(ggpubr)
+# library(devtools) 
+#install_github("AppliedDataSciencePartners/xgboostExplainer")
+library(xgboost) # Load XGBoost
+library(caret) # Load Caret
+# library(xgboostExplainer) # Load XGboost Explainer
+# library(pROC) # Load proc
+library(SHAPforxgboost) # Load shap for XGBoost
+library(plyr)
+library(Metrics)
+library(kableExtra)
+```
+
+```{r nd colors}
+# setting ND colors 
+nd_navy <- "#0C2340"
+nd_green <- "#00843D"
+nd_gold <- "#C99700"
+```
+
+```{r}
+load(".\\CRC_RDAs\\lax0_r2\\lax0_alpha_lambda.rda")
+#res_db, bst_lambda, bst_alpha, g_5,
+load(".\\CRC_RDAs\\lax0_r2\\lax0_bst_final_mod.rda")
+# bst_final_mod, bst_pred_data, tuned_importance, imp_plot, xgb_imp_df,
+# lax0_full_preds_df, post_tune_mod_pred_viz,
+# post_tune_mod_pred_viz_2,post_tune_diff_hist
+load(".\\CRC_RDAs\\lax0_r2\\lax0_eta.rda")
+#bst_mod_1, bst_mod_2, bst_mod_3, bst_mod_4, bst_mod_5,g_6, g_7, plot_data,
+load(".\\CRC_RDAs\\lax0_r2\\lax0_gamma.rda")
+# gam_df, bst_gamma,
+load(".\\CRC_RDAs\\lax0_r2\\lax0_min_child_max_depth.rda")
+# res_db, bst_max_depth, bst_min_child, g_2, 
+load(".\\CRC_RDAs\\lax0_r2\\lax0_pre_tune_files.rda")
+# prelim_importance, bst_split_pred_data_pre_tune, pred_viz_pre_tune, diff_hist_pre_tune
+load(".\\CRC_RDAs\\lax0_r2\\lax0_sample_colsample.rda")
+# res_db, bst_col_samp, bst_sub_samp, g_4, 
+```
+
+```{r}
+# bst_final_mod, bst_pred_data, tuned_importance, imp_plot, xgb_imp_df,
+# lax0_full_preds_df, post_tune_mod_pred_viz,
+# post_tune_mod_pred_viz_2,post_tune_diff_hist
+
+xgb_imp_df
+ggplot(data=xgb_imp_df[1:10,], aes(x=Importance, 
+                                                       y=reorder(Feature, -Importance, decreasing = TRUE))) + 
+  theme_minimal() + geom_col(fill=nd_navy) +
+  labs(title = "XG Boost Model Top 5 Most Important Variables", 
+       x = "Importance", y = "Variable") 
+
+mlax_imp_10 <- xgb_imp_df[1:10, ]$Feature
+
+wlax_imp_10 <- c(
+   "player_load_band_3_total_player_load_z"           , "player_load_band_2_total_player_load_z"           
+, "edi_z"                                            
+, "average_player_load_slow_session_z"               
+, "player_load_slow_z"                               
+, "pl_hi_sess_z"                                     
+, "ima_7_o_clock_low_1_0_z"                          
+,"player_load_1d_up_z"                              
+, "player_load_band_2_average_effort_count_session_z"
+, "average_player_load_slow_z" 
+)
+
+wlax_imp_10[wlax_imp_10 %in% mlax_imp_10]
+```
+
+```{r}
+bst_final_mod$evaluation_log %>% 
+  pivot_longer(cols = c(train_rmse), names_to = "phase") %>% 
+  ggplot(aes(x = iter, y = value, color = phase)) + geom_line(color=nd_navy, size=2) + theme_minimal() +
+  labs(title = "Train RMSE - Lax0 XGBoost")
+
+post_df <- lax0_full_preds_df %>% 
+  filter(time == "post-tune") 
+
+summary(post_df$difference)
+```
+
+
+## Histogram Pre & Post-Tune
+```{r}
+ggplot(lax0_full_preds_df, aes(x = difference, y=..density.., fill = time)) + 
+  geom_histogram(data = subset(lax0_full_preds_df, time == "pre-tune"),
+                 alpha = 0.5, position = "identity", binwidth =50) + 
+  geom_histogram(data = subset(lax0_full_preds_df, time == "post-tune"),
+                 alpha = 0.5, position = "identity", binwidth = 50) + 
+  scale_fill_manual(values = c("pre-tune" = nd_navy, "post-tune" = nd_green)) + 
+  labs(title = "Overlaying Histograms - Lax0",
+       x = "Residual (Actual - Predicted)", y = "Frequency") + 
+  theme_minimal() 
+```
+
+```{r}
+lax0_post <- lax0_full_preds_df %>% filter(time == "post-tune")
+dim(lax0_post[abs(lax0_post$difference) <= 150, ])[1]/(dim(lax0_post)[1]) #75.9%
+```
+
+
+```{r}
+set.seed(33) # Set Seed
+split_ratio <- 0.7
+train_row_ind <- sample(x=nrow(model_df), 
+                        size=floor(nrow(model_df) * split_ratio))
+
+# Split the data into training and testing sets
+train_data <- model_df[train_row_ind, ]
+test_data <- model_df[-train_row_ind, ]
+
+train_response = train_data[,1]
+train_x = train_data[,-1]
+test_response = test_data[,1]
+test_x = test_data[,-1]
+
+response <- model_df$high_speed_distance
+
+# Create training data XGBOOST
+dtrain <- xgb.DMatrix(data = as.matrix(train_data[ ,-1]), label = train_response)
+# Create test data XGBOOST
+dtest <- xgb.DMatrix(data = as.matrix(test_data[ ,-1]),label = test_response)
+lax0_full_preds_df
+```
+
+# Post CRC - DURATION
+```{r}
+load(".\\CRC_RDAs\\lax0_dur_r1\\l0_dur_alpha_lambda.rda")
+#res_db, bst_lambda, bst_alpha, g_5,
+load(".\\CRC_RDAs\\lax0_dur_r1\\l0_dur_bst_final_mod.rda")
+# bst_final_mod, bst_pred_data, tuned_importance, imp_plot, xgb_imp_df,
+# lax0_full_preds_df, post_tune_mod_pred_viz,
+# post_tune_mod_pred_viz_2,post_tune_diff_hist 
+# test_comb_tuned_df
+load(".\\CRC_RDAs\\lax0_dur_r1\\l0_dur_eta.rda")
+#bst_mod_1, bst_mod_2, bst_mod_3, bst_mod_4, bst_mod_5,g_6, g_7, plot_data,
+load(".\\CRC_RDAs\\lax0_dur_r1\\l0_dur_gamma.rda")
+# gam_df, bst_gamma,
+load(".\\CRC_RDAs\\lax0_dur_r1\\l0_dur_min_child_max_depth.rda")
+# res_db, bst_max_depth, bst_min_child, g_2, 
+load(".\\CRC_RDAs\\lax0_dur_r1\\l0_dur_pre_tune_files.rda")
+# prelim_importance, bst_split_pred_data_pre_tune, pred_viz_pre_tune, diff_hist_pre_tune, test_comb_df
+load(".\\CRC_RDAs\\lax0_dur_r1\\l0_dur_sample_colsample.rda")
+# res_db, bst_col_samp, bst_sub_samp, g_4, 
+```
+
+
+

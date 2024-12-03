@@ -1,0 +1,291 @@
+---
+title: "Team Model 02-12-24"
+author: "Kaylin Slattery"
+date: "2024-01-23"
+output: html_document
+---
+
+## <span style= "color:#0C2340" > DATA IMPORTATION & SET UP <span style= "color:#0C2340" >
+
+```{r packages warnings=FALSE, error=FALSE, message=FALSE}
+library(tidyverse)
+#library(DescTools)
+library(janitor)
+library(ggplot2)
+library(jpeg)
+library(chron)
+library(lubridate)
+library(anytime)
+library(ggpubr)
+library(devtools) 
+#install_github("AppliedDataSciencePartners/xgboostExplainer")
+library(xgboost) # Load XGBoost
+library(caret) # Load Caret
+#library(xgboostExplainer) # Load XGboost Explainer
+library(pROC) # Load proc
+library(SHAPforxgboost) # Load shap for XGBoost
+library(plyr)
+library(Metrics)
+```
+
+```{r nd colors}
+# setting ND colors 
+nd_navy <- "#0C2340"
+nd_green <- "#00843D"
+nd_gold <- "#C99700"
+```
+
+```{r creating functions}
+calc_num_zeros_by_col <- function(df_title) {
+  cols_vec <- colnames(df_title)
+  zeros_count_vec <- rep("", length=length(cols_vec))
+  zeros_test_vec <- rep("", length=length(cols_vec))
+
+  for (i in 1:length(cols_vec)){
+    zeros_count_vec[i] <- sum(df_title[,i] == 0)
+    zeros_test_vec[i] <- sum(df_title[,i] == 0 | df_title[,i] == "0")
+  }
+
+  zero_count_df <- cbind.data.frame(cols_vec, as.numeric(zeros_count_vec))
+  names(zero_count_df) <- c("column_name", "number_zeros")
+
+  # Append df_title to the data frame name
+  assign(paste0("zero_count_df_", deparse(substitute(df_title))), zero_count_df,
+         envir = .GlobalEnv)
+}
+```
+
+```{r read data}
+#lax0_data <- read.csv("LAXdata0.csv") #reading in data
+
+lax0_data <- read.csv(".\\Exported_CSVs\\lax0_data_cleaned.csv") 
+
+lax0_data <- lax0_data %>%
+  dplyr::rename(high_speed_distance_perc = high_speed_distance, 
+                high_speed_distance = high_speed_distance_covered)
+
+
+not_include_indoor_vec <- c("meta", "total_effort", 
+                            "heart_rate", "hr", "velocity", "acceleration",
+                            "deceleration", "metre", "meterage",
+                            "exertion_index","max_vel_max", 
+                            "footstrikes", "running_series_count", 
+                            "running_imbalance")
+
+dur_var_names <- lax0_data %>% select(contains("duration")) %>% names()
+dur_var_names <- dur_var_names <- dur_var_names[dur_var_names != "total_duration"] 
+dist_var_names <- lax0_data %>% select(contains("distance")) %>% names()
+dist_var_names <- dist_var_names[dist_var_names != "high_speed_distance"] 
+
+not_include_indoor_vec <- c(not_include_indoor_vec, dur_var_names, dist_var_names)
+
+lax0_indoor_full_df <- lax0_data %>%
+  filter(high_speed_distance > 0) %>%
+  select(-contains(not_include_indoor_vec))
+
+lax0_mod_df <- lax0_indoor_full_df %>% 
+  filter(total_duration > 0) 
+
+num_col_names <- lax0_data %>% 
+  select_if(is.numeric) %>% 
+  names()
+
+num_col_names_indoor <- num_col_names[num_col_names %in% names(lax0_indoor_full_df)] 
+
+to_remove_vec <- c("unix", "position_name")
+
+test_df <- lax0_data %>% 
+  select(all_of(c("unique_session", "name_id", num_col_names_indoor))) %>%
+  select(-contains(to_remove_vec))
+
+
+players <- unique(lax0_data$name_id)
+
+z_prep_mod_df <- test_df
+
+full_df <- as.data.frame(matrix(ncol=dim(z_prep_mod_df)[2]))
+names(full_df) <- names(z_prep_mod_df)
+
+for(i in 1:length(players)){
+  player_df <- z_prep_mod_df[z_prep_mod_df$name_id == players[i],]
+  
+  df_non_num <- player_df %>% select_if(is.character)
+  df_num <- player_df %>% select_if(is.numeric)
+  
+  df_num <- scale(df_num)
+  combined <- cbind(df_non_num, df_num)
+  full_df <- rbind(full_df, combined)
+}
+
+full_df <- full_df[-1,]
+names(full_df) <- paste0(names(full_df), "_z") 
+
+z_score_df <- full_df %>% select(-contains(c("name_id")))
+```
+
+
+```{r merging together into large df with reg and z data}
+comb_z_df <- merge(lax0_data, z_score_df, 
+                   by.x = "unique_session", by.y = "unique_session_z",
+                   all.x=TRUE)
+
+head(comb_z_df)
+```
+
+
+### <span style= "color:#AE9142" > XG BOOST - COMBINED DF </span>
+##### PLAYER Z-SCORE
+```{r partition data - player z-score mod}
+comb_z_df_outdoor <- comb_z_df %>%
+  filter(high_speed_distance != 0)
+
+low_lim <- quantile(comb_z_df_outdoor$high_speed_distance, .10)
+up_lim <- quantile(comb_z_df_outdoor$high_speed_distance, .90)
+
+include_mod_cols <- c("high_speed_distance", "position_name",
+                      names(test_df), names(z_score_df))
+
+comb_z_df_mod <- comb_z_df_outdoor[, names(comb_z_df_outdoor) %in% include_mod_cols]
+```
+
+```{r modeling split - reg and z-score}
+model_df <- comb_z_df_mod %>% 
+  select(!contains(c("unique_session", "name_id"))) %>%
+  #filter(high_speed_distance_covered >= low_lim & high_speed_distance_covered <= up_lim) %>%
+  select("high_speed_distance", everything())
+
+num_col_names_indoor <- num_col_names[num_col_names %in% names(lax0_indoor_full_df)]
+
+to_remove_vec <- c("unix", "position_name_z")
+
+test_df <- lax0_data %>%
+  select(all_of(c("unique_session","name_id", "high_speed_distance", num_col_names_indoor))) %>%
+  select(-contains(to_remove_vec))
+
+comb_z_df_outdoor <- comb_z_df %>%
+  filter(high_speed_distance != 0)
+
+# low_lim <- quantile(comb_z_df_outdoor$high_speed_distance, .10)
+# up_lim <- quantile(comb_z_df_outdoor$high_speed_distance, .90)
+
+include_mod_cols <- c("high_speed_distance", names(test_df), names(z_score_df))
+
+comb_z_df_mod <- comb_z_df_outdoor[, names(comb_z_df_outdoor) %in% include_mod_cols]
+
+comb_z_df_full <- comb_z_df[, names(comb_z_df) %in% include_mod_cols]
+# 
+comb_z_df_full <- comb_z_df_full %>% filter(high_speed_distance >= 0)
+head(comb_z_df_full)
+# write.csv(comb_z_df_full,"G:\\Shared drives\\Analytics Capstone\\R Project - Analytics Capstone\\Exported_CSVs\\lax0_data_cleaned_with_z.csv",row.names=FALSE)
+```
+
+```{r}
+comb_z_df_full %>% select(negate(is.numeric))
+
+which(colnames(comb_z_df_full) =='unique_session')
+which(colnames(comb_z_df_full) =='name_id')
+which(colnames(comb_z_df_full) =='high_speed_distance_z')
+
+comb_z_df_full <- comb_z_df_full[-c(1,208,412)]
+```
+
+
+
+```{r}
+test <- comb_z_df_full[ , which(apply(comb_z_df_full, 2, var) != 0)]
+split_ratio <- 0.70 
+split_index <- floor(nrow(test) * split_ratio)
+train_data <- test[1:split_index, ]
+test_data <- test[(split_index + 1):nrow(test), ]
+
+which(colnames(comb_z_df_full) =='high_speed_distance')
+
+train_data4 <- train_data[,-204]
+test_data4 <- test_data[,-204]
+```
+
+### START OF PCA
+```{r}
+options(scipen=999)
+pcs <- prcomp(train_data4, scale.=TRUE)
+summary(pcs)
+
+vars <- apply(pcs$x, 2, var)  
+props <- vars / sum(vars)
+cumsum(props)
+
+pcs$rotation[,1:30]
+pcs$center
+pcs$x[1:10,1:30]
+
+data1 <- data.frame(cbind(pcs$x[,1:30], train_data$high_speed_distance))
+head(data1)
+model <- lm(V31 ~ ., data = data1)
+summary(model)
+
+
+test_pca_pred <- predict(pcs, newdata=test_data4)
+predictions <- predict(model, data.frame(test_pca_pred))
+
+valid.df <- data.frame(actual = test_data$high_speed_distance, estimated = predictions, residuals = test_data$high_speed_distance - predictions)
+valid.df
+
+```
+
+```{r}
+dim(valid.df[abs(valid.df$residuals) <= 150, ])[1]/(dim(valid.df)[1])
+summary(valid.df$residuals)
+
+```
+
+```{r}
+library(hrbrthemes)
+p <- valid.df %>%
+  ggplot( aes(x=residuals)) +
+    geom_histogram(binwidth=15, fill=nd_green, alpha=0.9) +
+    ggtitle("Bin size = 50") +
+    theme_minimal() +
+    theme(
+      plot.title = element_text(size=15)
+    )
+p
+```
+
+#### MODEL WITH EVERYTHING IN IT
+```{r}
+hsd_col <- which(colnames(comb_z_df_full)=='high_speed_distance')
+
+scale_data <- scale(comb_z_df_full[,-hsd_col])
+scale_data <- data.frame(test111)
+scale_data <- test111[ , which(apply(test111, 2, var) != 0)]
+
+pcs_test <- prcomp(scale_data, scale.=F)
+summary(pcs_test)
+vars <- apply(pcs_test$x, 2, var)
+props <- vars / sum(vars)
+cumsum(props)
+
+data1_test <- data.frame(cbind(pcs_test$x[,1:16], test111, comb_z_df_full$high_speed_distance))
+
+split_ratio <- 0.70 
+split_index <- floor(nrow(data1_test) * split_ratio)
+train_data_test <- data1_test[1:split_index, ]
+test_data_test <- data1_test[(split_index + 1):nrow(data1_test), ]
+```
+
+```{r}
+everything_model <- lm(comb_z_df_full.high_speed_distance ~ ., data = train_data_test)
+predictions_test <- predict(everything_model, data.frame(test_data_test))
+
+valid.df <- data.frame(actual = test_data_test$comb_z_df_full.high_speed_distance, estimated = predictions_test, residuals = test_data_test$comb_z_df_full.high_speed_distance - predictions_test)
+valid.df
+```
+
+```{r}
+dim(valid.df[abs(valid.df$residuals) <= 150, ])[1]/(dim(valid.df)[1])
+summary(valid.df$residuals)
+
+sd(abs(valid.df$residuals))
+#quantile(valid.df$residuals, probs = seq(0, 1, by= 0.1))
+```
+

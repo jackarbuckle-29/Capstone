@@ -1,0 +1,118 @@
+---
+title: "April_Cleaning_Data_040924"
+author: "Team 8"
+date: "2024-04-09"
+output: html_document
+---
+# Men's Lacrosse
+```{r}
+lax0_data <- read.csv(".\\Exported_CSVs\\lax0_data_cleaned.csv")
+lax0_data <- lax0_data %>%
+  dplyr::rename(high_speed_distance_perc=high_speed_distance, 
+                high_speed_distance=high_speed_distance_covered)
+
+
+
+not_include_indoor_vec <- c("meta", "total_effort", "heart_rate", "hr",
+                            "velocity", "acceleration", "deceleration", "metre",
+                            "meterage", "exertion_index","max_vel_max", 
+                            "footstrikes", "running_series_count", "running_imbalance")
+
+dur_var_names <- lax0_data %>% select(contains("duration")) %>% names()
+dur_var_names <- dur_var_names <- dur_var_names[dur_var_names != "total_duration"] 
+dist_var_names <- lax0_data %>% select(contains("distance")) %>% names()
+dist_var_names <- dist_var_names[dist_var_names != "high_speed_distance"] 
+not_include_indoor_vec <- c(not_include_indoor_vec, dur_var_names, dist_var_names)
+
+
+lax0_indoor_cols_df <- lax0_data %>%
+  #filter(high_speed_distance > 0) %>%
+  select(-contains(not_include_indoor_vec))
+
+lax0_indoor_cols_df
+
+#write.csv(lax0_indoor_cols_df,"G:\\Shared drives\\Analytics Capstone\\R Project - Analytics Capstone\\Exported_CSVs\\lax0_data_cleaned_new.csv",row.names=FALSE)
+```
+
+# Women's Lacrosse
+```{r}
+lax1_data <- read.csv(".\\Exported_CSVs\\lax1_data_cleaned.csv")
+lax1_data <- lax1_data %>%
+  dplyr::rename(high_speed_distance=high_speed_running_distance_session)
+
+
+not_include_indoor_vec <- c("meta", "total_effort", "heart_rate", "hr",
+                            "velocity", "acceleration", "deceleration", "metre",
+                            "meterage", "exertion_index","max_vel_max", 
+                            "footstrikes", "running_series_count", "running_imbalance")
+
+dur_var_names <- lax1_data %>% select(contains("duration")) %>% names()
+dur_var_names <- dur_var_names <- dur_var_names[dur_var_names != "total_duration"] 
+dist_var_names <- lax1_data %>% select(contains("distance")) %>% names()
+dist_var_names <- dist_var_names[dist_var_names != "high_speed_distance"] 
+not_include_indoor_vec <- c(not_include_indoor_vec, dur_var_names, dist_var_names)
+
+lax1_indoor_cols_df <- lax1_data %>%
+  #filter(high_speed_distance > 0) %>%
+  select(-contains(not_include_indoor_vec))
+
+lax1_indoor_cols_df
+
+#write.csv(lax1_indoor_cols_df,"G:\\Shared drives\\Analytics Capstone\\R Project - Analytics Capstone\\Exported_CSVs\\lax1_data_cleaned_new.csv",row.names=FALSE)
+```
+
+
+
+
+```{r}
+soc_data_z <- read.csv(".\\Exported_CSVs\\comb_soc_data_cleaned_with_z.csv")
+soc_data <- read.csv(".\\Exported_CSVs\\comb_soc_data_cleaned.csv")
+
+# ORIGINAL POSITION ENCODINGS
+# FORWARD 1, MIDFIELD 2, BACK 3, Utility 4, WINGER 5, GK 0
+# soc1_data$position_name <- as.numeric(revalue(soc1_data$position_name, 
+#         c("Forward"=1, "Midfield"=2, "Center Back" = 3,
+#           "Striker"=1, "Keeper" = 0, "Outside Back" = 4,
+#           "Center Midfield"=2, "Defender"=3, "Midfielder" = 2, 
+#           "Goal Keeper"=0, "Defensive Midfielder"=2, "Central Midfielder"=2,
+#           "Attacking Midfielder"=2, "Centre Back"=3, "Utility"=4, 
+#           "Wing"=5, "Back"=3, "Wide"=5)))
+
+# current gk: 0; current defense: 3, 4; current midfielder = 2; current wing = 5
+
+
+# soc0_data$position_name <- as.numeric(revalue(soc0_data$position_name, 
+#         c("Center Back"=4, "Center Mid"=2, "Forward"=1, "Outside Mid"=6, "Outside Back"=5,
+#           "GoalKeeper"=0, "6/8"=3, "2/3"=5, "7/11"=1,  "9"  =1, "1" = 0, "4/5" =4,
+#           "Goalkeeper"=0, "Defensive Line"=4, "Defensive Back"   =4, 
+#           "Central Midfielder"=3, "Defender"=4, "Missing Position"=7,
+#           "Fullback"=5, "Central Defender"=4, "Winger"=6)))
+
+# TARGET POSITION ENCODINGS
+### GKS = 0
+### DEFENSE = 1
+### MIDFIELDER =2 
+### FORWARD = 3
+### WINGER = 5
+
+# soc_data_z <- soc_data_z %>%
+#   mutate(new_position_encoding = case_when(
+#     # Handling for gender == 1 (soc1_data)
+#     (team_gender == 1 & position_name %in% c(0)) ~ 0,  # GKs
+#     (team_gender == 1 & position_name %in% c(1)) ~ 3,  # Forwards
+#     (team_gender == 1 & position_name %in% c(2)) ~ 2,  # Midfielders
+#     (team_gender == 1 & position_name %in% c(3, 4)) ~ 1,  # Defense & Utility
+#     (team_gender == 1 & position_name %in% c(5)) ~ 5,  # Wingers
+# 
+#     # Handling for gender == 0 (soc0_data)
+#     (team_gender == 0 & position_name %in% c(0)) ~ 0,  # GKs
+#     (team_gender == 0 & position_name %in% c(1, 7, 11)) ~ 3,  # Forwards (assuming 7 and 11 are forward positions for soc0)
+#     (team_gender == 0 & position_name %in% c(2, 6, 8)) ~ 2,  # Midfielders (assuming 6 and 8 are midfield positions for soc0)
+#     (team_gender == 0 & position_name %in% c(3, 4, 5)) ~ 1,  # Defense (assuming 5 is also a defense position for soc0)
+#     # Note: There's no direct mapping for Wingers in soc0 based on the given encodings, so it might need clarification
+# 
+#     # Default case if none of the above conditions are met
+#     TRUE ~ NA_integer_    # Keep original encoding if no match
+#   ))
+```
+

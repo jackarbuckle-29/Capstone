@@ -1,0 +1,73 @@
+---
+title: "PostTune_Code_032124"
+author: "Kaylin Slattery"
+date: "2024-03-21"
+output: html_document
+---
+
+```{r packages warnings=FALSE, error=FALSE, message=FALSE}
+library(tidyverse)
+library(DescTools)
+library(janitor)
+library(ggplot2)
+library(jpeg)
+library(chron)
+library(lubridate)
+library(anytime)
+library(ggpubr)
+library(devtools) 
+#install_github("AppliedDataSciencePartners/xgboostExplainer")
+library(xgboost) # Load XGBoost
+library(caret) # Load Caret
+library(xgboostExplainer) # Load XGboost Explainer
+library(pROC) # Load proc
+library(SHAPforxgboost) # Load shap for XGBoost
+library(plyr)
+library(Metrics)
+```
+
+```{r nd colors}
+# setting ND colors 
+nd_navy <- "#0C2340"
+nd_green <- "#00843D"
+nd_gold <- "#C99700"
+```
+
+```{r}
+load(".\\RDAs from CRC Codes\\lax0_032224\\lax0_alpha_lambda.rda")
+load(".\\RDAs from CRC Codes\\lax0_032224\\lax0_bst_final_mod.rda")
+load(".\\RDAs from CRC Codes\\lax0_032224\\lax0_eta.rda")
+load(".\\RDAs from CRC Codes\\lax0_032224\\lax0_gamma.rda")
+load(".\\RDAs from CRC Codes\\lax0_032224\\lax0_min_child_max_depth.rda")
+load(".\\RDAs from CRC Codes\\lax0_032224\\lax0_pre_tune_files.rda")
+load(".\\RDAs from CRC Codes\\lax0_032224\\lax0_sample_colsample.rda")
+
+
+```
+
+```{r}
+#pre_tune_diff_hist
+```
+
+```{r}
+dim(bst_split_pred_data_pre_tune)[1]
+within_cut <- bst_split_pred_data_pre_tune %>% 
+  filter(difference <= abs(100))
+dim(within_cut)[1]/ dim(bst_split_pred_data_pre_tune)[1]
+# before tuning - 85.75% of data within 150 meters
+# post - tuning WAITING FOR RESULTS
+
+ggplot(bst_split_pred_data_pre_tune,
+       aes(x = difference, #fill = color_condition_wt,
+           y = after_stat(count / sum(count)))) +
+  geom_histogram(fill = nd_navy, alpha=0.5, binwidth = 25) +
+  labs(title = "Histogram of Difference between Prediction vs Actual",
+       subtitle= paste0(selected_sport, " High Speed Distance ", viz_time),
+       x = "Difference between Prediction and Actual",
+       y = "Percent Frequency") +
+  theme_minimal() +xlim(-500, 500)
+
+# 80% of predictions within 100 meters
+
+```
+

@@ -1,0 +1,221 @@
+---
+title: "Machine Learning - Data Preparation & Feature Selection (Lasso)"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE)
+```
+
+## Set Up
+
+
+```{r Load Packages}
+library(glmnet) # Load glmnet for lasso
+library(ggplot2) # Load ggplot2 for visualizations
+library(naniar) # Load nanair for missing data visualization
+library(OneR) # Load OneR for binning function
+library(mice) # Load mice for missing data inputation
+library(plotmo) # for plot_glmnet for lasso visualization
+
+nd_navy <- "#0C2340"
+nd_green <- "#00843D"
+nd_gold <- "#C99700"
+```
+
+For this analysis we wish to determine which factors play a role in determining the life  expectancy in different countries. For this we have gathered data from different countries, the life expectancy in the country for that year and some public health variables. 
+
+
+```{r Load Data}
+lax1_data <- read.csv(".\\Exported_CSVs\\lax1_data_cleaned.csv")
+lax1_data <- lax1_data %>%
+  dplyr::rename(high_speed_distance=high_speed_running_distance_session)
+```
+
+```{r Summary response}
+summary(lax1_data$high_speed_distance)
+
+lax1_mod_df <- lax1_data %>% filter(high_speed_distance != 0)
+
+# creating a mini df for subset of process and testing logic
+sample_rows <- sample(x=nrow(lax1_mod_df),size=500)
+sample_cols <- names(lax1_mod_df)[1:12]
+sample_cols <- c("high_speed_distance", sample_cols)
+mini_df <- lax1_mod_df[sample_rows, sample_cols]
+```
+
+
+```{r density Life Expectancy}
+g_1 <- ggplot(lax1_mod_df, aes(x = high_speed_distance)) +
+  geom_density(fill = nd_navy, alpha = 0.5) +
+   theme_set(theme_bw(base_size = 22) ) +
+  theme(panel.grid.major = element_blank(), # Remove grid
+        panel.grid.minor = element_blank(), # Remove grid
+        panel.border = element_blank(), # Remove grid
+        panel.background = element_blank()) + # Remove grid 
+  labs(x = "Life Expectancy (Years)", title = "Distribution of High Speed Distance")
+g_1
+```
+
+
+## Linear Regression
+
+We can now apply a linear regression model to our dataset:
+
+```{r Linear Regression}
+use_dat <- mini_df
+fit_1 <- lm(high_speed_distance ~., data = use_dat)
+# Summarise regression
+summary(fit_1)
+```
+
+From this we see that many of the features are deemed to be significant in the model and we have a pretty high R-squared value. 
+
+## Noise 
+##### THIS IS SOMETHING THAT YOU NEVER DO, THIS IS JUST TO DEMONSTRATE THE ISSUES OF NOISE
+
+What would happen to our results if we added some noise variables to the dataset. Lets create some noise variables first. `rnorm()` generates values from a normal distribution with mean 0 and standard deviation 1. 
+
+```{r Create Nonsense 1}
+set.seed(123456) # Set seed
+nonsense <- as.data.frame(matrix(rep(NA, nrow(use_dat) * 50), nrow = nrow(use_dat), ncol =50)) # Create data frame to store results
+for(i in 1:ncol(nonsense)){
+  nonsense[,i] <- rnorm(n = nrow(use_dat)) # Generate random variables
+}
+```
+
+Now lets join them to our data frame and run the model again:
+```{r Linear Regression 2}
+# Join variables and noise
+use_dat_2 <- cbind.data.frame(use_dat, nonsense)
+# Run linear regression
+fit_2 <- lm(high_speed_distance ~., data = use_dat_2)
+# Summarise regression
+summary(fit_2)
+```
+
+
+Lasso model tries to 
+
+* get as good a fit as possible
+* keep coefficients as small as possible
+
+
+As we see from the output linear regression has found several of the nonsense variables to be significant in the model and the R^2 has increased even though those variables contain only noise. In addition each of these variables will have an impact on our predictions for new data even though they only contain noise, reducing the accuracy of predictions for this model.
+
+
+## The Lasso
+
+somewhat similar to PCA in terms that it limits variables, but it keeps the interpretability of the original variables
+
+
+As an alternative to linear regression we can use the lasso model.
+
+Prior to applying the lasso we want to scale the data which we use to have standard deviation 1 and mean 0. We can do this with the `scale()` command:
+
+```{r}
+# Drop missing values
+use_dat_2 <- na.omit(use_dat_2)
+# Scale explanatory variables
+x_vars <- scale(use_dat_2[,-1]) #removes response column
+```
+
+We fit this model using the `glmnet()` command:
+
+```{r Lasso 1}
+#  Fit lasso model
+fit_3 <- glmnet(x = x_vars, # Fit explanatory variables
+                y = use_dat_2$high_speed_distance, # Fit response variable
+                alpha = 1, # Set alpha as 1 for lasso
+                lambda = 0.5) # Set lambda as 0.5
+```
+
+We can then view the calculated coefficients using the `coef()` command:
+
+```{r View lasso 1}
+coef(fit_3) # Print out lasso coefficients
+
+#all noise columns are dropped out of the model
+```
+
+We can see from the print out that the lasso model has calculated the coefficients for each of the noise variables to be zero, indicated by `.`. Thus these variables have no impact on the model and will not affect the predictions which we generate. 
+
+To compare the Lasso and linear regression coefficients we can run:
+
+```{r Lasso Coef v Linear Coef}
+temp <- coef(fit_2) # Extract coefficients from linear model
+temp_2 <- as.vector(coef(fit_3)) # Extract coefficients from lasso model
+cbind.data.frame(temp, temp_2) # Join coefficients together
+```
+
+Here we see that the lasso has only selected the coefficients for some of the actual variables in the model to be greater than zero and these coefficients are close to the linear regression estimates.
+
+
+#### Lasso CV
+In the above example we set our lambda value manually, alternatively we can use the built in cross-validation function to calculate the lambda value to use, though this does not always produce an optimal result.
+
+```{r Lasso CV}
+# Create sequence of lambda values
+lambda_seq <- seq(from = 0.1, to = 10, by = 0.1)
+# Run lasso cross validation
+fit_4 <- cv.glmnet(x = x_vars, # Set explanatory variables
+                   y = use_dat_2$high_speed_distance, # Set response variable
+                   alpha = 1, # Set alpha as 1 for lasso
+                   lambda = lambda_seq, # Set lambda as sequence of lambda values
+                   nfolds = 10) # Set number of folds as 10
+```
+
+
+We can extract the calculated lambda value using:
+
+```{r Lasso extract best lambda}
+best_lam <- fit_4$lambda.1se # Extract best lambda
+best_lam # View best lambda
+```
+
+We can then use the calculated lambda in our lasso model as:
+
+```{r}
+# Fit lasso model
+fit_5 <- glmnet(x = x_vars, # Set x variables
+                y = use_dat_2$high_speed_distance, # Set response variable
+                alpha = 1, # Set alpha as 1 for lasso
+                lambda = best_lam) # Set lambda as best lambda
+# Print out coefficients
+coef(fit_5)
+```
+
+
+We can also run the lasso without selecting a lambda value to use and let the algorithm try multiple values:
+
+```{r}
+# Fit lasso without selecting lambda
+fit_6 <- glmnet(x = x_vars, # Set x variables
+                y = use_dat_2$high_speed_distance, # Set response 
+                alpha = 1) # Set alpha as 1 for lasso
+```
+
+
+
+```{r}
+# Fit lasso without selecting lambda
+fit_7 <- glmnet(x = x_vars, # Set x variables
+                y = use_dat_2$high_speed_distance, # Set response 
+                alpha = 0.1) # Set alpha as 1 for lasso
+coef(fit_7)
+```
+
+We can then determine the path of the coefficients over different values of lambda using:
+
+
+```{r View coefficient paths}
+plot_glmnet(fit_6, # Plot lasso coefficients by lambda
+            xvar = "lambda") 
+
+
+# as the penalty parameter increases (x-axis), it forces more and more of the coefficients to 0 
+# this graph is honestly terrible, but can be nice to see what is happening
+
+# df shows how many variables are left in the model at a certain point
+```
+

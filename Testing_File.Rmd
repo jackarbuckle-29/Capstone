@@ -1,0 +1,1343 @@
+---
+title: "Testing_File"
+author: "Kaylin Slattery"
+date: "2024-03-28"
+output: html_document
+---
+This code file contains a variety of different blocks to confirm results, quickly make adjustments to codes, or simply re-run other codes.
+
+
+Correlation of Indoor Variables
+```{r}
+lax0_data <- read.csv(".\\Exported_CSVs\\lax0_data_cleaned.csv")
+
+not_include_indoor_vec <- c("meta", "total_effort", "heart_rate", "hr",
+                            "velocity", "acceleration", "deceleration", "metre",
+                            "meterage", "exertion_index","max_vel_max", 
+                            "footstrikes", "running_series_count",
+                            "running_imbalance")
+
+dur_var_names <- lax0_data %>% select(contains("duration")) %>% names()
+dur_var_names <- dur_var_names <- dur_var_names[dur_var_names != "total_duration"] 
+dist_var_names <- lax0_data %>% select(contains("distance")) %>% names()
+dist_var_names <- dist_var_names[dist_var_names != "high_speed_distance"] 
+not_include_indoor_vec <- c(not_include_indoor_vec, dur_var_names, dist_var_names)
+
+
+lax0_indoor_cols_df <- lax0_data %>%
+  #filter(high_speed_distance > 0) %>%
+  select(-contains(not_include_indoor_vec))
+
+lax0_indoor_cols_df
+
+lax0_indoor_cols_df <- lax0_indoor_cols_df %>% 
+  filter(location == "outdoor") %>% 
+  filter(high_speed_distance > 0) %>%
+  select(-contains(not_include_indoor_vec)) %>% select_if(is.numeric)
+
+#lax0_indoor_cols_df$high_speed_distance
+
+cors_df <- sapply(lax0_indoor_cols_df[, colnames(lax0_indoor_cols_df) != "high_speed_distance"], function(x) {
+  cor(x, lax0_indoor_cols_df[["high_speed_distance"]], use = "complete.obs")
+})
+
+sorted_cors <- cors_df %>% 
+  as.data.frame() %>% 
+  arrange(desc(abs(V1))) %>% 
+  filter(row_number() > 1)
+
+names(sorted_cors) <- "Correlation" # name correlation column
+
+head(sorted_cors, 12)
+
+DT::datatable(
+  head(sorted_cors, 10),
+  caption = htmltools::tags$caption(
+    style = 'caption-side: top; text-align: left; color:#00843D; font-size:125%;',
+    'Strongest (Indoor/Outdoor) Correlations with High Speed Distance Covered (by Abs Value)'
+  ),
+  options = list(
+    scrollY = '370px',  # Set the desired height in pixels
+    scrollX = '400px',
+    paging = FALSE      # Disable pagination if needed
+  )
+)
+
+# to save the table for report/slides can uncomment code
+# write.table(head(sorted_cors, 12),"clipboard", sep="\t", row.names = TRUE, col.names = TRUE)
+
+# write.csv(head(sorted_cors, 12),"G:\\Shared drives\\Analytics Capstone\\R Project - Analytics Capstone\\Exported_CSVs\\sorted_cors_updated.csv",row.names=TRUE)
+```
+
+
+# Top Variables for Soccer XGBoost Models
+```{r}
+comb_soc <- read.csv(".\\Exported_CSVs\\comb_soc_data_cleaned_with_z.csv")
+wsoc <- comb_soc %>% filter(team_gender == 1) %>% select(!team_gender)
+msoc <- comb_soc %>% filter(team_gender == 0) %>% select(!team_gender)
+
+wsoc_2 <- read.csv(".\\Exported_CSVs\\soc1_data_cleaned.csv")
+wsoc_2 <- wsoc_2 %>% dplyr::rename(high_speed_distance = total_high_speed_distance)
+
+msoc_2 <- read.csv(".\\Exported_CSVs\\soc0_data_cleaned.csv")
+
+
+hypo_cols_vec <- c("high_speed_distance", "rhie_total_bouts", "ima_accel_low", "field_load_avg",
+                   "high_intensity_load", "explosive_efforts", "ima_9_o_clock_high_1_0", 
+                   "ima_12_o_clock_high_1_0", "ima_3_o_clock_high_1_0",
+                   "ima_6_o_clock_high_1_0", "player_load_2d", "peak_player_load",
+                   "total_ima", "activity_type_binary")
+second_set_hypos <- c("rhie_efforts_per_bout_mean", "rhie_efforts_per_bout_max",
+                      "rhie_effort_recovery_max", "rhie_effort_recovery_mean",
+                      "ima_accel_medium",
+                      "ima_accel_high" , "ima_free_running_band_1_average_stride_rate_1_0",
+                      "ima_free_running_band_1_event_count_1_0",
+                      "ima_free_running_band_2_average_stride_rate_1_0",
+                      "ima_free_running_band_2_event_count_1_0",
+                      "ima_free_running_band_3_average_stride_rate_1_0",
+                      "ima_free_running_band_3_event_count_1_0",
+                      "ima_free_running_total_time_1_0",
+                      "ima_free_running_total_time_1_0_2",
+                      "ima_free_running_total_event_count_1_0",
+                      "ima_free_running_mean_stride_rate_1_0",
+                      "ima_free_running_band_1_average_stride_rate",
+                      "ima_free_running_band_1_event_count",
+                      "ima_free_running_band_2_average_stride_rate",
+                      "ima_free_running_band_2_event_count",
+                      "ima_free_running_total_time",
+                      "ima_free_running_total_time_2",
+                      "ima_free_running_total_event_count",
+                      "ima_free_running_mean_stride_rate",
+                      "ima_free_running_band_3_average_stride_rate",
+                      "ima_free_running_band_3_event_count" ,
+                      "position_name", "total_duration")
+
+all_hypos <- c(hypo_cols_vec, second_set_hypos)
+
+hypo_cols_vec[hypo_cols_vec %in% names(wsoc_2) == FALSE]
+
+
+model_df <- msoc_2 %>% select(any_of(all_hypos)) %>% filter(high_speed_distance > 0)
+  
+
+set.seed(33) # Set Seed
+split_ratio <- 0.75
+train_row_ind <- sample(x=nrow(model_df), 
+                        size=floor(nrow(model_df) * split_ratio))
+
+# Split the data into training and testing sets
+train_data <- model_df[train_row_ind, ]
+test_data <- model_df[-train_row_ind, ]
+
+train_response = train_data[,1]
+train_x = train_data[,-1]
+test_response = test_data[,1]
+test_x = test_data[,-1]
+
+response <- model_df$high_speed_distance
+
+# Create training data XGBOOST
+dtrain <- xgb.DMatrix(data = as.matrix(train_data[ ,-1]), label = train_response)
+# Create test data XGBOOST
+dtest <- xgb.DMatrix(data = as.matrix(test_data[ ,-1]),label = test_response)
+
+bst_split_mod_pre_tune <- xgboost(
+    data = as.matrix(train_data[, -1]),  # Exclude the response variable
+    label = train_data$high_speed_distance,
+    booster = "gblinear",  # Use linear booster for regression
+    objective = "reg:linear",  # Specify regression as the objective
+    eval_metric = "rmse",  # Evaluation metric (Root Mean Squared Error)
+    nrounds = 500,  # Number of boosting rounds (you can adjust this)
+    print_every_n = 20)
+  
+# Make predictions on the test data
+bst_preds_pre_tune <- predict(bst_split_mod_pre_tune, as.matrix(test_data[, -1]))
+  
+bst_actual_pre_tune <- test_data$high_speed_distance
+  
+# Calculate RMSE (Root Mean Squared Error) for model evaluation
+rmse <- sqrt(mean((bst_preds_pre_tune - test_data$high_speed_distance)^2))
+#You can also inspect the model's feature importance if needed
+importance <- xgb.importance(feature_names = colnames(as.matrix(train_data[, -1])),
+                             model = bst_split_mod_pre_tune)
+
+#preds1 <- predict(bst_1, dtest)
+bst_pred_data_pre_tune <- cbind.data.frame(bst_preds_pre_tune, bst_actual_pre_tune)
+  
+names(bst_pred_data_pre_tune) <- c("predicted", "actual")
+bst_pred_data_pre_tune$difference <- bst_pred_data_pre_tune$predicted - bst_pred_data_pre_tune$actual
+
+importance
+
+writeClipboard(importance$Feature[1:10])
+```
+
+
+
+
+```{r}
+soc <- read.csv(".\\Exported_CSVs\\comb_soc_data_cleaned_with_z.csv")
+soc$position_name
+```
+
+
+# Z-score dfs
+```{r}
+lax1_z <- read.csv(".\\Exported_CSVs\\lax1_data_cleaned_with_z.csv")
+names(lax1_z) 
+
+lax1_z %>% select(contains("binary"))
+
+chr_z_remove <- lax1_z %>% select_if(is.character) %>%
+  select(contains("_z")) %>% names()
+num_z_remove <- lax1_z %>% select_if(is.numeric) %>% 
+  select(contains(c("binary", "position", "gender", "start_time", "end_time"))) %>%
+  select(contains("z")) %>% names()
+log_cols_remove <- lax1_z %>% select_if(is.logical) %>% names()
+
+remove_vec <- c(chr_z_remove, num_z_remove, log_cols_remove)
+lax1_z <- lax1_z %>% select(-remove_vec)
+
+# names(lax1_z)
+# lax1_z <- lax1_z %>% select(-any_of(log_cols_remove))
+```
+
+```{r}
+lax0_z <- read.csv(".\\Exported_CSVs\\lax0_data_cleaned_with_z.csv")
+names(lax0_z) 
+
+lax0_z %>% select(contains("binary"))
+
+chr_z_remove <- lax0_z %>% select_if(is.character) %>%
+  select(contains("_z")) %>% names()
+num_z_remove <- lax0_z %>% select_if(is.numeric) %>% 
+  select(contains(c("binary", "position", "gender", "start_time", "end_time"))) %>%
+  select(contains("z")) %>% names()
+
+remove_vec <- c(chr_z_remove, num_z_remove)
+lax0_z <- lax0_z %>% select(-remove_vec)
+
+names(lax0_z)
+lax0_z$total_duration
+lax0_z %>% select_if(is.logical)
+```
+
+# Testing Diff Avg Ratio Soccer XGBoost
+```{r}
+############################# SET UP ############################# 
+library(dplyr)
+library(ggplot2)
+library(xgboost)
+library(stringr)
+library(readr)
+library(Metrics)
+
+# setting ND colors 
+nd_navy <- "#0C2340"
+nd_green <- "#00843D"
+nd_gold <- "#C99700"
+
+# test <- "test to confirm file running and rdas save"
+# save(test, file = "cs_diff_avg_run_test.rda")
+
+
+
+############################# CLEANING TO COMBINE DATASETS ############################# 
+# data
+soc_mod_data <- read.csv(".\\Exported_CSVs\\comb_soc_data_cleaned_with_z.csv") 
+soc_mod_data <- soc_mod_data %>% filter(high_speed_distance != 0)
+imp_cols <- c(which( colnames(soc_mod_data)=="high_speed_distance" ),
+              which( colnames(soc_mod_data)=="unique_session"),
+             which( colnames(soc_mod_data)=="name_id" ),
+              which( colnames(soc_mod_data)=="position_name" ))
+soc_mod_data <- soc_mod_data %>% select(!session_count_z)
+
+
+# CREATING A SUBSET SAMPLE OF DATA FOR LOGIC TESTING
+# sample_ind <- sample(dim(soc_mod_data)[1], 2000)
+# sample_col <- sample(dim(soc_mod_data)[2], 25)
+# soc_mod_data <- soc_mod_data[sample_ind, c(imp_cols, 100:150)]
+#"high_speed_distance" %in% names(soc_mod_data)
+
+players <- unique(soc_mod_data$name_id) # getting unique players
+
+full_df <- as.data.frame(matrix(ncol=(dim(soc_mod_data)[2])))
+names(full_df) <- names(soc_mod_data)
+
+# LOOPING THROUGH UNIQUE PLAYERS 
+for(p in 1:length(players)){
+  player_df <- soc_mod_data[soc_mod_data$name_id == players[p],] # player-specific df
+  df_chr <- player_df %>% select_if(is.character) # character columns df for player
+  df_num <- player_df %>% select_if(is.numeric) # numeric columns df for player
+  # player_hsd_avg <- mean(df_num$high_speed_distance) # calculating player's avg hsd
+  
+  print(paste0("Player: ", players[p]))
+  print(paste0("Player df Length: ", nrow(player_df)))
+  
+  # LOOPING THROUGH ROWS OF EACH PLAYER'S DATAFRAME   
+  for (i in 1:dim(player_df)[1]){ 
+    # df_num$hsd_diff_from_avg[i] <- df_num$high_speed_distance[i]/player_hsd_avg #diff from avg
+    # df_num$player_hsd_avg[i] <- player_hsd_avg # filling in avg value 
+    #print(paste0("inner loop i - each row within player_df: ", i))
+  }
+  
+  print(paste0("num df Length: ", nrow(df_num)))
+  print(paste0("num df Length: ", nrow(df_chr)))
+  # loop_df <- cbind(df_chr, df_num) # combining numeric & character dfs together
+  # full_df <- rbind(full_df, loop_df) # combining all player dfs together
+  
+}
+
+# creating two NA columns to fill with Looping
+soc_mod_data$hsd_diff_from_avg <- NA
+soc_mod_data$player_hsd_avg <- NA
+
+soc_mod_data$hsd_diff_from_avg <- as.numeric(soc_mod_data$hsd_diff_from_avg) 
+soc_mod_data$player_hsd_avg <- as.numeric(soc_mod_data$player_hsd_avg) 
+
+# creating empty dataframe for Looping
+full_df <- as.data.frame(matrix(ncol=(dim(soc_mod_data)[2])))
+names(full_df) <- names(soc_mod_data)
+
+# LOOPING THROUGH UNIQUE PLAYERS 
+for(p in 1:length(players)){
+  player_df <- soc_mod_data[soc_mod_data$name_id == players[p],] # player-specific df
+  
+  df_chr <- player_df %>% select_if(is.character) # character columns df for player
+  df_num <- player_df %>% select_if(is.numeric) # numeric columns df for player 
+  player_hsd_avg <- mean(df_num$high_speed_distance) # calculating player's avg hsd
+  
+  # LOOPING THROUGH ROWS OF EACH PLAYER'S DATAFRAME   
+  for (i in 1:dim(player_df)[1]){ 
+    df_num$hsd_diff_from_avg[i] <- df_num$high_speed_distance[i]/player_hsd_avg #diff from avg
+    df_num$player_hsd_avg[i] <- player_hsd_avg # filling in avg value 
+  }
+  
+  loop_df <- cbind(df_chr, df_num) # combining numeric & character dfs together
+  full_df <- rbind(full_df, loop_df) # combining all player dfs together
+  
+}
+
+full_df <- full_df[-1,] # removing first row (which is NA values)
+
+player_avg_df <- full_df %>% select(c("name_id", "player_hsd_avg")) 
+player_avg_df <- distinct(player_avg_df)
+# full_df %>% select(contains(c("high_speed_distance", "hsd", "name_id",
+#                               "activity_type", "unique_session")))
+```
+
+```{r}
+# Print column information to debug
+print(paste("Iteration for player:", players[p]))
+print("Columns in full_df:")
+print(names(full_df))
+print("Columns in loop_df:")
+print(names(loop_df))
+
+# Check for column mismatch
+if(length(names(full_df)) != length(names(loop_df))) {
+  print("Column count mismatch detected!")
+} else if(!all(names(full_df) == names(loop_df))) {
+  print("Column name mismatch detected!")
+}
+
+setdiff(names(full_df), names(loop_df))
+
+# Attempt to bind rows with dplyr::bind_rows for more flexibility
+library(dplyr)
+full_df <- bind_rows(full_df, loop_df)
+
+
+
+
+```
+
+
+
+```{r}
+############################# MODELING PREP ############################# 
+target_var <- "hsd_diff_from_avg"
+model_df <- full_df %>% 
+  filter(high_speed_distance > 0) %>%
+  select(-contains("high_speed_distance")) %>% 
+  select_if(is.numeric) %>%
+  select(all_of(target_var), everything())
+
+set.seed(33) # Set Seed
+split_ratio <- 0.75
+train_row_ind <- sample(x=nrow(model_df), 
+                        size=floor(nrow(model_df) * split_ratio))
+
+# Split the data into training and testing sets
+train_data <- model_df[train_row_ind, ]
+test_data <- model_df[-train_row_ind, ]
+
+train_response = train_data[,1]
+train_x = train_data[,-1]
+test_response = test_data[,1]
+test_x = test_data[,-1]
+
+response <- model_df$hsd_diff_from_avg
+
+# Create training data XGBOOST
+dtrain <- xgb.DMatrix(data = as.matrix(train_data[ ,-1]), label = train_response)
+# Create test data XGBOOST
+dtest <- xgb.DMatrix(data = as.matrix(test_data[ ,-1]),label = test_response)
+
+############################# XG BOOST PRELIMINARY MODELING ############################# 
+selected_sport <- "Combined Soccer"
+xgb_viz_title <- "XGBoost Model Actual vs Predicted High Speed Distance (covered)"
+
+bst_split_mod_pre_tune <- xgboost(
+  data = as.matrix(train_data[, -1]),  # Exclude the response variable
+  label = train_data$hsd_diff_from_avg,
+  booster = "gblinear",  # Use linear booster for regression
+  objective = "reg:linear",  # Specify regression as the objective
+  eval_metric = "rmse",  # Evaluation metric (Root Mean Squared Error)
+  nrounds = 2000,  # Number of boosting rounds (you can adjust this)
+  print_every_n = 20)
+
+# Make predictions on the test data
+bst_preds_pre_tune <- predict(bst_split_mod_pre_tune, as.matrix(test_data[, -1]))
+
+bst_actual_pre_tune <- test_data$hsd_diff_from_avg
+
+# Calculate RMSE (Root Mean Squared Error) for model evaluation
+rmse <- sqrt(mean((bst_preds_pre_tune - test_data$hsd_diff_from_avg)^2))
+#You can also inspect the model's feature importance if needed
+importance <- xgb.importance(feature_names = colnames(as.matrix(train_data[, -1])),
+                             model = bst_split_mod_pre_tune)
+
+#preds1 <- predict(bst_1, dtest)
+bst_split_pred_data_pre_tune <- cbind.data.frame(bst_preds_pre_tune, bst_actual_pre_tune)
+
+names(bst_split_pred_data_pre_tune) <- c("predicted", "actual")
+
+# calc difference as actual-predicted
+bst_split_pred_data_pre_tune$difference <- bst_split_pred_data_pre_tune$actual - bst_split_pred_data_pre_tune$predicted 
+bst_split_pred_data_pre_tune$time <- "pre-tune"
+
+pre_tune_diff_summary_soc <- summary(bst_split_pred_data_pre_tune$difference)
+```
+
+
+# Testing Duration-Adjusted Soccer XGBoost
+```{r}
+soc_with_z <- read.csv(".\\Exported_CSVs\\comb_soc_data_cleaned_with_z.csv") 
+```
+
+```{r}
+dur_prep_mod_df <-  soc_with_z %>%  
+  filter(total_duration != 0) %>%
+  # select(!contains(c("unique_session_z", "name_id", "high_speed_distance_z", "team_gender_z", 
+  #                    "activity_type_z", "date_z", "location_z", "position_name_z"))) %>%
+  #filter(high_speed_distance >= low_lim) %>% #& total_high_speed_distance <= up_lim)  %>%
+  select(all_of("high_speed_distance"), everything()) %>%
+  arrange(unique_session)
+
+cols_to_drop_dur_calc <- c("binary")
+include_cols <- dur_prep_mod_df %>% select_if(is.numeric) %>% names()
+include_cols <- c("unique_session", include_cols)
+
+dur_prep_mod_df <- dur_prep_mod_df %>% 
+  select(contains(include_cols)) %>%
+  select(-contains(cols_to_drop_dur_calc)) 
+
+sel_col_names <- names(dur_prep_mod_df)[1:12]
+cols_z <- names(dur_prep_mod_df)[180:200]
+sub_cols <- c("total_duration", "unique_session", "high_speed_distance", sel_col_names)
+sample_rows <- sample(x=nrow(dur_prep_mod_df),size=200)
+dur_prep_mod_df <- dur_prep_mod_df[sample_rows, sub_cols]
+
+dur_prep_mod_df <-  dur_prep_mod_df %>%
+  arrange(unique_session)
+
+full_df <- as.data.frame(matrix(ncol=dim(dur_prep_mod_df)[2]))
+names(full_df) <- names(dur_prep_mod_df)
+
+for(i in 1:length(dur_prep_mod_df)){
+  df_non_num <- dur_prep_mod_df %>% select_if(is.character) 
+  df_num <- dur_prep_mod_df %>% select_if(is.numeric) 
+  df_num_over_time <- (df_num)/dur_prep_mod_df$total_duration
+  full_df <- cbind(df_num_over_time) #,df_non_num)
+}
+
+names(full_df) <- paste0(names(full_df), "_per_min") 
+
+comb_dur_df <- cbind.data.frame(dur_prep_mod_df, full_df) 
+bin_col_names <- soc_full_mod_df %>% select(contains("binary")) %>% names()
+bin_sub_df <- soc_full_mod_df %>% select(all_of(c("unique_session", bin_col_names)))
+comb_dur_df <- merge(comb_dur_df, bin_sub_df, 
+                     all.x=TRUE, by="unique_session")
+
+not_include_vec <- comb_dur_df %>% select_if(is.character) %>% names()
+not_include_vec <- c(not_include_vec, "total_duration.1")
+#not_include_vec <- c("high_speed_distance_per_min", not_include_vec)
+```
+
+
+```{r}
+############################# MODELING PREP ############################# 
+# target_var <- "hsd_diff_from_avg"
+# model_df <- full_df %>% 
+#   filter(high_speed_distance > 0) %>%
+#   select(-contains("high_speed_distance")) %>%
+#   select(all_of(target_var), everything())
+
+model_df <- comb_dur_df %>% 
+  filter(high_speed_distance > 0) %>%
+  select(-contains("high_speed_distance")) %>% 
+  select(-contains(not_include_vec)) %>%
+  #filter(high_speed_distance >= low_lim) %>% #& total_high_speed_distance <= up_lim)  %>%
+  select(all_of("high_speed_distance_per_min"), everything()) 
+
+set.seed(33) # Set Seed
+split_ratio <- 0.7
+train_row_ind <- sample(x=nrow(model_df), 
+                        size=floor(nrow(model_df) * split_ratio))
+
+# Split the data into training and testing sets
+train_data <- model_df[train_row_ind, ]
+test_data <- model_df[-train_row_ind, ]
+
+train_response = train_data[,1]
+train_x = train_data[,-1]
+test_response = test_data[,1]
+test_x = test_data[,-1]
+
+response <- model_df$high_speed_distance_per_min
+
+# Create training data XGBOOST
+dtrain <- xgb.DMatrix(data = as.matrix(train_data[ ,-1]), label = train_response)
+# Create test data XGBOOST
+dtest <- xgb.DMatrix(data = as.matrix(test_data[ ,-1]),label = test_response)
+
+############################# XG BOOST PRELIMINARY MODELING ############################# 
+selected_sport <- "Combined Soccer"
+xgb_viz_title <- "XGBoost Model Actual vs Predicted High Speed Distance (covered)"
+
+bst_split_mod_pre_tune <- xgboost(
+    data = as.matrix(train_data[, -1]),  # Exclude the response variable
+    label = train_data$high_speed_distance_per_min,
+    booster = "gblinear",  # Use linear booster for regression
+    objective = "reg:linear",  # Specify regression as the objective
+    eval_metric = "rmse",  # Evaluation metric (Root Mean Squared Error)
+    nrounds = 2000,  # Number of boosting rounds (you can adjust this)
+    print_every_n = 20)
+  
+# Make predictions on the test data
+bst_preds_pre_tune <- predict(bst_split_mod_pre_tune, as.matrix(test_data[, -1]))
+bst_actual_pre_tune <- test_data$high_speed_distance_per_min
+  
+# Calculate RMSE (Root Mean Squared Error) for model evaluation
+rmse <- sqrt(mean((bst_preds_pre_tune - test_data$high_speed_distance_per_min)^2))
+#You can also inspect the model's feature importance if needed
+prelim_importance <- xgb.importance(feature_names = colnames(as.matrix(train_data[, -1])),
+                             model = bst_split_mod_pre_tune)
+
+#preds1 <- predict(bst_1, dtest)
+bst_split_pred_data_pre_tune <- cbind.data.frame(bst_preds_pre_tune, bst_actual_pre_tune)
+names(bst_split_pred_data_pre_tune) <- c("predicted", "actual")
+
+# calc difference as actual-predicted
+bst_split_pred_data_pre_tune$difference <- bst_split_pred_data_pre_tune$actual - bst_split_pred_data_pre_tune$predicted 
+bst_split_pred_data_pre_tune$time <- "pre-tune"
+
+pre_tune_diff_summary_soc1 <- summary(bst_split_pred_data_pre_tune$difference)
+```
+
+# HIDE
+```{r}
+lax1 <- read.csv(".\\Exported_CSVs\\lax1_data_cleaned.csv")
+lax0 <- read.csv(".\\Exported_CSVs\\lax0_data_cleaned.csv")
+soc <- read.csv(".\\Exported_CSVs\\comb_soc_data_cleaned.csv")
+
+summary(lax1$high_speed_running_distance_session) 
+summary(lax0$high_speed_distance_covered) 
+lax0 %>% filter(high_speed_distance_covered>=0) %>% select(high_speed_distance_covered) %>% summary()
+lax0 %>% filter(high_speed_distance_covered<0)
+summary(soc$high_speed_distance)
+```
+
+```{r}
+# LACROSSE REMOVE A VALUE THAT IS LESS THAN 0
+soc_with_z <- read.csv(".\\Exported_CSVs\\comb_soc_data_cleaned_with_z.csv")
+
+dur_prep_mod_df <-  soc_with_z %>%  filter(total_duration != 0) %>%
+  select(!contains(c("unique_session_z", "name_id", "high_speed_distance_z", "team_gender_z", 
+                     "activity_type_z", "date_z", "location_z", "position_name_z"))) %>%
+  #filter(high_speed_distance >= low_lim) %>% #& total_high_speed_distance <= up_lim)  %>%
+  select(all_of("high_speed_distance"), everything()) %>%
+  arrange(unique_session)
+
+cols_to_drop_dur_calc <- c("binary")
+include_cols <- dur_prep_mod_df %>% select_if(is.numeric) %>% names()
+include_cols <- c("unique_session", include_cols)
+
+dur_prep_mod_df <- dur_prep_mod_df %>% 
+  select(contains(include_cols)) %>%
+  select(-contains(cols_to_drop_dur_calc)) 
+
+# sel_col_names <- names(dur_prep_mod_df)[1:12]
+# sub_cols <- c("total_duration", "unique_session", "high_speed_distance",sel_col_names)
+# sample_rows <- sample(x=nrow(dur_prep_mod_df),size=200)
+# mini_df <- dur_prep_mod_df[sample_rows, sub_cols]
+dur_prep_mod_df <-  dur_prep_mod_df %>%
+  arrange(unique_session)
+
+full_df <- as.data.frame(matrix(ncol=dim(dur_prep_mod_df)[2]))
+names(full_df) <- names(dur_prep_mod_df)
+
+for(i in 1:length(dur_prep_mod_df)){
+  df_non_num <- dur_prep_mod_df %>% select_if(is.character) 
+  df_num <- dur_prep_mod_df %>% select_if(is.numeric) 
+  df_num_over_time <- (df_num)/dur_prep_mod_df$total_duration
+  full_df <- cbind(df_num_over_time) #,df_non_num)
+}
+
+names(full_df) <- paste0(names(full_df), "_per_min") 
+
+comb_dur_df <- cbind.data.frame(dur_prep_mod_df, full_df) 
+bin_col_names <- soc_full_mod_df %>% select(contains("binary")) %>% names()
+bin_sub_df <- soc_full_mod_df %>% select(all_of(c("unique_session", bin_col_names)))
+comb_dur_df <- merge(comb_dur_df, bin_sub_df, 
+                     all.x=TRUE, by="unique_session")
+
+not_include_vec <- comb_dur_df %>% select_if(is.character) %>% names()
+not_include_vec <- c(not_include_vec, "total_duration.1")
+#not_include_vec <- c("high_speed_distance_per_min", not_include_vec)
+
+############################# MODELING PREP ############################# 
+model_df <- comb_dur_df %>% 
+  select(-high_speed_distance) %>% 
+  select(-contains(not_include_vec)) %>%
+  #filter(high_speed_distance >= low_lim) %>% #& total_high_speed_distance <= up_lim)  %>%
+  select(all_of("high_speed_distance_per_min"), everything()) 
+
+```
+
+```{r setup}
+############################# SET UP ############################# 
+library(dplyr)
+library(ggplot2)
+library(xgboost)
+library(stringr)
+library(readr)
+library(Metrics)
+
+# setting ND colors 
+nd_navy <- "#0C2340"
+nd_green <- "#00843D"
+nd_gold <- "#C99700"
+
+# calc_num_zeros_by_col <- function(df_title) {
+#   cols_vec <- colnames(df_title)
+#   zeros_count_vec <- rep("", length=length(cols_vec))
+#   zeros_test_vec <- rep("", length=length(cols_vec))
+# 
+#   for (i in 1:length(cols_vec)){
+#     zeros_count_vec[i] <- sum(df_title[,i] == 0)
+#     zeros_test_vec[i] <- sum(df_title[,i] == 0 | df_title[,i] == "0")
+#   }
+# 
+#   zero_count_df <- cbind.data.frame(cols_vec, as.numeric(zeros_count_vec))
+#   names(zero_count_df) <- c("column_name", "number_zeros")
+# 
+#   # Append df_title to the dataframe name
+#   assign(paste0("zero_count_df_", deparse(substitute(df_title))), zero_count_df,
+#          envir = .GlobalEnv)
+# }
+
+
+test <- "test to confirm file running and rdas save"
+save(test, file = "l1_dur_run_test.rda")
+```
+
+
+
+
+```{r}
+############################# DATA & CALCULATING DURATIONS ############################# 
+# lax1_data <- read.csv("lax1_data_cleaned.csv")
+lax1_data <- read.csv(".\\Exported_CSVs\\lax1_data_cleaned.csv")
+lax1_data <- lax1_data %>% #set response var name to "high_speed_distance"
+  dplyr::rename(high_speed_distance=high_speed_running_distance_session)
+```
+
+```{r} 
+not_include_indoor_vec <- c("meta", "total_effort", 
+                            "heart_rate", "hr", "velocity", "acceleration",
+                            "deceleration", "metre", "meterage",
+                            "exertion_index","max_vel_max", 
+                            "footstrikes", "running_series_count", 
+                            "running_imbalance")
+
+dur_var_names <- lax1_data %>% select(contains("duration")) %>% names()
+dur_var_names <- dur_var_names <- dur_var_names[dur_var_names != "total_duration"] 
+dist_var_names <- lax1_data %>% select(contains("distance")) %>% names()
+dist_var_names <- dist_var_names[dist_var_names != "high_speed_distance"] 
+
+not_include_indoor_vec <- c(not_include_indoor_vec, dur_var_names, dist_var_names)
+
+lax1_indoor_full_df <- lax1_data %>%
+  filter(high_speed_distance != 0) %>%
+  select(-contains(not_include_indoor_vec))
+
+lax1_mod_df <- lax1_indoor_full_df %>% 
+  filter(total_duration != 0) 
+sel_col_names <- names(lax1_mod_df)[1:12]
+sub_cols <- c("total_duration", "unique_session", "high_speed_distance",
+              sel_col_names) 
+sample_rows <- sample(x=nrow(lax1_mod_df), 
+                      size=200)
+mini_df <- lax1_mod_df[sample_rows, sub_cols]
+dur_prep_mod_df <-  mini_df %>%
+  arrange(unique_session)
+
+# dur_prep_mod_df <- lax1_mod_df %>%
+#   arrange(unique_session)
+
+cols_to_drop_dur_calc <- c("binary")
+include_cols <- dur_prep_mod_df %>% select_if(is.numeric) %>% names()
+include_cols <- c("unique_session", include_cols)
+
+dur_prep_mod_df <- dur_prep_mod_df %>% 
+  select(contains(include_cols)) %>%
+  select(-contains(cols_to_drop_dur_calc)) 
+
+full_df <- as.data.frame(matrix(ncol=dim(dur_prep_mod_df)[2]))
+names(full_df) <- names(dur_prep_mod_df)
+
+for(i in 1:length(dur_prep_mod_df)){
+  df_non_num <- dur_prep_mod_df %>% select_if(is.character) 
+  df_num <- dur_prep_mod_df %>% select_if(is.numeric) 
+  df_num_over_time <- (df_num)/dur_prep_mod_df$total_duration
+  full_df <- cbind(df_num_over_time) #,df_non_num)
+}
+
+names(full_df) <- paste0(names(full_df), "_per_min") 
+
+comb_dur_df <- cbind.data.frame(dur_prep_mod_df, full_df) 
+
+
+
+############################# MODELING PREP ############################# 
+not_include_vec <- comb_dur_df %>% select_if(is.character) %>% names()
+not_include_vec <- c(not_include_vec, "total_duration.1")
+#not_include_vec <- c("high_speed_distance_per_min", not_include_vec, "total_duration.1")
+
+model_df <- comb_dur_df %>% 
+  select(-high_speed_distance) %>% 
+  select(-contains(not_include_vec)) %>%
+  #filter(high_speed_distance >= low_lim) %>% #& total_high_speed_distance <= up_lim)  %>%
+  select(all_of("high_speed_distance_per_min"), everything()) 
+```
+
+
+```{r}
+set.seed(33) # Set Seed
+split_ratio <- 0.7
+train_row_ind <- sample(x=nrow(model_df), 
+                        size=floor(nrow(model_df) * split_ratio))
+
+# Split the data into training and testing sets
+train_data <- model_df[train_row_ind, ]
+test_data <- model_df[-train_row_ind, ]
+
+train_response = train_data[,1]
+train_x = train_data[,-1]
+test_response = test_data[,1]
+test_x = test_data[,-1]
+
+response <- model_df$high_speed_distance
+
+# Create training data XGBOOST
+dtrain <- xgb.DMatrix(data = as.matrix(train_data[ ,-1]), label = train_response)
+# Create test data XGBOOST
+dtest <- xgb.DMatrix(data = as.matrix(test_data[ ,-1]),label = test_response)
+```
+
+
+```{r}
+############################# XG BOOST PRELIMINARY MODELING ############################# 
+selected_sport <- "Combined Soccer"
+xgb_viz_title <- "XGBoost Model Actual vs Predicted High Speed Distance (covered)"
+
+bst_split_mod_pre_tune <- xgboost(
+    data = as.matrix(train_data[, -1]),  # Exclude the response variable
+    label = train_data$high_speed_distance_per_min,
+    booster = "gblinear",  # Use linear booster for regression
+    objective = "reg:linear",  # Specify regression as the objective
+    eval_metric = "rmse",  # Evaluation metric (Root Mean Squared Error)
+    nrounds = 2000,  # Number of boosting rounds (you can adjust this)
+    print_every_n = 20)
+  
+# Make predictions on the test data
+bst_preds_pre_tune <- predict(bst_split_mod_pre_tune, as.matrix(test_data[, -1]))
+bst_actual_pre_tune <- test_data$high_speed_distance_per_min
+  
+# Calculate RMSE (Root Mean Squared Error) for model evaluation
+rmse <- sqrt(mean((bst_preds_pre_tune - test_data$high_speed_distance_per_min)^2))
+#You can also inspect the model's feature importance if needed
+prelim_importance <- xgb.importance(feature_names = colnames(as.matrix(train_data[, -1])),
+                             model = bst_split_mod_pre_tune)
+
+#preds1 <- predict(bst_1, dtest)
+bst_split_pred_data_pre_tune <- cbind.data.frame(bst_preds_pre_tune, bst_actual_pre_tune)
+names(bst_split_pred_data_pre_tune) <- c("predicted", "actual")
+
+# calc difference as actual-predicted
+bst_split_pred_data_pre_tune$difference <- bst_split_pred_data_pre_tune$actual - bst_split_pred_data_pre_tune$predicted 
+bst_split_pred_data_pre_tune$time <- "pre-tune"
+
+pre_tune_diff_summary_lax1 <- summary(bst_split_pred_data_pre_tune$difference)
+
+# bst_split_pred_data_pre_tune %>% 
+#   filter(bst_split_pred_data_pre_tune$difference == max(bst_split_pred_data_pre_tune$difference) | 
+#          bst_split_pred_data_pre_tune$difference == min(bst_split_pred_data_pre_tune$difference))  
+
+# DATA VIZ
+pred_viz_pre_tune <- ggplot(bst_split_pred_data_pre_tune, aes(x = predicted, y = actual)) +
+  geom_point(color=nd_navy) +
+  geom_smooth(color=nd_gold) + theme_minimal() +
+  labs(title = xgb_viz_title, 
+    subtitle = paste(selected_sport, "Data;",
+                     "High Speed Distance:", 
+                     "Min: ", low_lim, sep=" "))
+
+viz_time <- "pre-tuning"
+diff_hist_pre_tune <- ggplot(bst_split_pred_data_pre_tune,
+       aes(x = difference, #fill = color_condition_wt,
+           y = after_stat(count / sum(count)))) +
+  geom_histogram(fill = nd_navy, alpha=0.5) +
+  labs(title = "Histogram of Difference between Prediction vs Actual",
+       subtitle= paste0(selected_sport, " High Speed Distance ", viz_time),
+       x = "Difference between Prediction and Actual",
+       y = "Percent Frequency") +
+  theme_minimal() + ylim(0, .25) + xlim(-750, 500)
+
+
+set.seed(33)
+key_cols_df <- comb_dur_df %>% 
+  select(contains(c("high_speed_distance", "duration"))) %>% 
+  select(-contains("total_duration.1")) %>% 
+  select(-total_duration_per_min)
+test_key_cols_df <- key_cols_df[-train_row_ind, ]
+test_comb_df <- cbind.data.frame(test_key_cols_df, bst_split_pred_data_pre_tune)
+
+test_comb_df$hsd_pred <-  test_comb_df$predicted*test_comb_df$total_duration
+
+save(prelim_importance, bst_split_pred_data_pre_tune, test_comb_df,
+     pred_viz_pre_tune, diff_hist_pre_tune, file = "l1_dur_pre_tune_files.rda")
+```
+
+
+
+
+# TUNING PARAMETERS &  FINAL MODEL
+```{r}
+############################# MAX DEPTH MIN CHILD ############################# 
+# Be Careful - This can take a very long time to run
+max_depth_vals <- c(3, 5, 7, 10) # Create vector of max depth values
+min_child_weight <- c(1,3,5,7, 10) # Create vector of min child values
+
+# Expand grid of parameter values
+cv_params <- expand.grid(max_depth_vals, min_child_weight)
+names(cv_params) <- c("max_depth", "min_child_weight")
+# Create results vector
+rmse_vec  <- rep(NA, nrow(cv_params)) 
+# Loop through results
+
+for(i in 1:nrow(cv_params)){
+  set.seed(111111)
+  bst_tune <- xgb.cv(data = dtrain, # Set training data
+                     
+                     nfold = 5, # Use 5 fold cross-validation
+                     
+                     eta = 0.1, # Set learning rate
+                     max.depth = cv_params$max_depth[i], # Set max depth
+                     min_child_weight = cv_params$min_child_weight[i], # Set minimum number of samples in node to split
+                     
+                     
+                     nrounds = 1000, # Set number of rounds
+                     early_stopping_rounds = 20, # Set number of rounds to stop at if there is no improvement
+                     
+                     verbose = 1, # 1 - Prints out fit
+                     nthread = 1, # Set number of parallel threads
+                     print_every_n = 20 # Prints out result every 20th iteration
+                     
+  ) # Set evaluation metric to use
+  
+  rmse_vec[i] <- bst_tune$evaluation_log$test_rmse_mean[bst_tune$best_ntreelimit]
+  
+  
+}
+
+
+# Join results in dataset
+res_db <- cbind.data.frame(cv_params, rmse_vec)
+names(res_db)[3] <- c("rmse") 
+res_db$max_depth <- as.factor(res_db$max_depth) # Convert tree number to factor for plotting
+res_db$min_child_weight <- as.factor(res_db$min_child_weight) # Convert node size to factor for plotting
+
+# Print AUC heatmap
+g_2 <- ggplot(res_db, aes(y = max_depth, x = min_child_weight, fill = rmse)) + # set aesthetics
+  geom_tile() + # Use geom_tile for heatmap
+  theme_bw() + # Set theme
+  scale_fill_gradient2(low = nd_green, # Choose low color
+                       mid = "white", # Choose mid color
+                       high = nd_navy, # Choose high color
+                       midpoint =mean(res_db$rmse), # Choose mid point
+                       space = "Lab", 
+                       na.value ="grey", # Choose NA value
+                       guide = "colourbar", # Set color bar
+                       aesthetics = "fill") + # Select aesthetics to apply
+  labs(x = "Minimum Child Weight", y = "Max Depth", fill = "RMSE") # Set labels
+g_2 # Generate plot
+
+# RESULTS -- Best Max.Depth = 5
+# RESULTS -- BEST Min.Child.Weight = 1
+
+bst_max_depth <- res_db[res_db$rmse==min(res_db$rmse),]$max_depth
+bst_min_child <- res_db[res_db$rmse==min(res_db$rmse),]$min_child_weight
+
+save(res_db, bst_max_depth, bst_min_child, g_2, 
+     file = "l1_dur_min_child_max_depth.rda")
+
+
+
+############################# GAMMA ############################# 
+gamma_vals <- c(0, 0.05, 0.1, 0.15, 0.2, .25) # Create vector of gamma values
+
+# Be Careful - This can take a very long time to run
+set.seed(111111)
+rmse_vec  <- rep(NA, length(gamma_vals))
+for(i in 1:length(gamma_vals)){
+  bst_tune <- xgb.cv(data = dtrain, # Set training data
+                     nfold = 5, # Use 5 fold cross-validation
+                     eta = 0.1, # Set learning rate
+                     max.depth = bst_max_depth, # Set max depth
+                     min_child_weight = bst_min_child, # Set min n of samples in node to split
+                     gamma = gamma_vals[i], # Set minimum loss reduction for split
+                     nrounds = 1000, # Set number of rounds
+                     early_stopping_rounds = 20, #number of rounds to stop if no improvement
+                     verbose = 1, # 1 - Prints out fit
+                     nthread = 1, # Set number of parallel threads
+                     print_every_n = 20 # Prints out result every 20th iteration
+  ) # Set evaluation metric to use
+  
+  rmse_vec[i] <- bst_tune$evaluation_log$test_rmse_mean[bst_tune$best_ntreelimit]
+  
+}
+
+# Lets view our results to identify the value of gamma to use:
+
+# Gamma results
+# Join gamma to values
+gam_df <- cbind.data.frame(gamma_vals, rmse_vec)
+
+bst_gamma <- gam_df[gam_df$rmse_vec==min(gam_df$rmse_vec),]$gamma_vals
+
+save(gam_df, bst_gamma, 
+     file = "l1_dur_gamma.rda")
+
+
+
+############################# SAMPLE & COLSAMPLE ############################# 
+# Be Careful - This can take a very long time to run
+subsample <- c(0.6, 0.7, 0.8, 0.9, 1) # Create vector of subsample values
+colsample_by_tree <- c(0.6, 0.7, 0.8, 0.9, 1) # Create vector of col sample values
+
+# Expand grid of tuning parameters
+cv_params <- expand.grid(subsample, colsample_by_tree)
+names(cv_params) <- c("subsample", "colsample_by_tree")
+# Create vectors to store results
+rmse_vec <- rep(NA, nrow(cv_params)) 
+# Loop through parameter values
+for(i in 1:nrow(cv_params)){
+  set.seed(111111)
+  bst_tune <- xgb.cv(data = dtrain, # Set training data
+                     nfold = 5, # Use 5 fold cross-validation
+                     eta = 0.1, # Set learning rate
+                     max.depth = bst_max_depth, # Set max depth
+                     min_child_weight = bst_min_child, #Set min child depth
+                     gamma = bst_gamma, # Set minimum loss reduction for split
+                     subsample = cv_params$subsample[i], #prop of training data used in tree
+                     colsample_bytree = cv_params$colsample_by_tree[i], 
+                     #num of variables to use in each tree
+ 
+                     nrounds = 1000, # Set number of rounds
+                     early_stopping_rounds = 20, #rounds to stop at if no improvement
+                     verbose = 1, # 1 - Prints out fit
+                     nthread = 1, # Set number of parallel threads
+                     print_every_n = 20 # Prints out result every 20th iteration
+  ) # Set evaluation metric to use
+  
+  
+  rmse_vec[i] <- bst_tune$evaluation_log$test_rmse_mean[bst_tune$best_ntreelimit]
+  
+  
+}
+
+# visualise tuning sample params
+
+res_db <- cbind.data.frame(cv_params, rmse_vec)
+names(res_db)[3] <- c("rmse") 
+res_db$subsample <- as.factor(res_db$subsample) # Convert tree number to factor for plotting
+res_db$colsample_by_tree <- as.factor(res_db$colsample_by_tree) # Convert node size to factor for plotting
+
+g_4 <- ggplot(res_db, aes(y = colsample_by_tree, x = subsample, fill = rmse)) + # set aesthetics
+  geom_tile() + # Use geom_tile for heatmap
+  theme_bw() + # Set theme
+  scale_fill_gradient2(low = nd_green, # Choose low color
+                       mid = "white", # Choose mid color
+                       high = nd_navy, # Choose high color
+                       midpoint =mean(res_db$rmse), # Choose mid point
+                       space = "Lab", 
+                       na.value ="grey", # Choose NA value
+                       guide = "colourbar", # Set color bar
+                       aesthetics = "fill") + # Select aesthetics to apply
+  labs(x = "Subsample", y = "Column Sample by Tree", fill = "RMSE") # Set labels
+g_4 # Generate plot
+
+bst_col_samp <- res_db[res_db$rmse == min(res_db$rmse), ]$colsample_by_tree
+bst_sub_samp <- res_db[res_db$rmse == min(res_db$rmse), ]$subsample
+
+save(res_db, bst_col_samp, bst_sub_samp, g_4, 
+     file = "l1_dur_sample_colsample.rda")
+
+
+
+############################# ALPHA & LAMBDA ############################# 
+# Be Careful - This can take a very long time to run
+lambda_vals <- c(.01, .1, .25, .5) # Create vector of lambda values
+alpha_vals <- c(.01, .1, .25, .5) # Create vector of alpha values
+
+# Expand grid of tuning parameters
+cv_params <- expand.grid(lambda_vals, alpha_vals)
+names(cv_params) <- c("lambda", "alpha")
+# Create vectors to store results
+rmse_vec <- rep(NA, nrow(cv_params)) 
+# Loop through parameter values
+for(i in 1:nrow(cv_params)){
+  set.seed(111111)
+  bst_tune <- xgb.cv(data = dtrain, # Set training data
+                     nfold = 5, # Use 5 fold cross-validation
+                     eta = 0.1, # Set learning rate
+                     max.depth = bst_max_depth, # Set max depth
+                     min_child_weight = bst_min_child, #Set min child depth
+                     gamma = bst_gamma, # Set minimum loss reduction for split
+                     subsample = bst_sub_samp, #prop of training data used in tree
+                     colsample_bytree = bst_col_samp, 
+                     #num of variables to use in each tree
+                     
+                     reg_lambda = cv_params$lambda[i], 
+                     reg_alpha = cv_params$alpha[i],
+ 
+                     nrounds = 1000, # Set number of rounds
+                     early_stopping_rounds = 20, #rounds to stop at if no improvement
+                     verbose = 1, # 1 - Prints out fit
+                     nthread = 1, # Set number of parallel threads
+                     print_every_n = 20 # Prints out result every 20th iteration
+  ) # Set evaluation metric to use
+  
+  rmse_vec[i] <- bst_tune$evaluation_log$test_rmse_mean[bst_tune$best_ntreelimit]
+  
+}
+
+# visualise tuning sample params
+
+res_db <- cbind.data.frame(cv_params, rmse_vec)
+names(res_db)[3] <- c("rmse") 
+res_db$lambda <- as.factor(res_db$lambda) # Convert tree number to factor for plotting
+res_db$alpha <- as.factor(res_db$alpha) # Convert node size to factor for plotting
+
+g_5 <- ggplot(res_db, aes(y = lambda, x = alpha, fill = rmse)) + # set aesthetics
+  geom_tile() + # Use geom_tile for heatmap
+  theme_bw() + # Set theme
+  scale_fill_gradient2(low = nd_green, # Choose low color
+                       mid = "white", # Choose mid color
+                       high = nd_navy, # Choose high color
+                       midpoint =mean(res_db$rmse), # Choose mid point
+                       space = "Lab", 
+                       na.value ="grey", # Choose NA value
+                       guide = "colourbar", # Set color bar
+                       aesthetics = "fill") + # Select aesthetics to apply
+  labs(x = "Alpha", y = "Lambda", fill = "RMSE") # Set labels
+g_5 # Generate plot
+
+bst_lambda <- res_db[res_db$rmse == min(res_db$rmse), ]$lambda
+bst_alpha <- res_db[res_db$rmse == min(res_db$rmse), ]$alpha
+
+save(res_db, bst_lambda, bst_alpha, g_5, 
+     file = "l1_dur_alpha_lambda.rda")
+
+
+
+
+
+
+############################# ETA ############################# 
+etas_vec <- c(.3, .1, .05, .01, .005)
+
+set.seed(111111)
+bst_mod_1 <- xgb.cv(data = dtrain, # Set training data
+                    nfold = 5, # Use 5 fold cross-validation
+                    eta = etas_vec[1], # Set learning rate
+                    max.depth = bst_max_depth, # use best max depth
+                    min_child_weight = bst_min_child, 
+                    gamma = bst_gamma, # use best gamma
+                    subsample = bst_sub_samp, # use best subsample
+                    colsample_bytree =  bst_col_samp, # use best col sample
+                    nrounds = 1000, # Set number of rounds
+                    early_stopping_rounds = 20,
+                    reg_lambda = bst_lambda,
+                    reg_alpha=bst_alpha,
+                    verbose = 1, # 1 - Prints out fit
+                    nthread = 1, # Set number of parallel threads
+                    print_every_n = 20) 
+
+set.seed(111111)
+bst_mod_2 <- xgb.cv(data = dtrain, # Set training data
+                    nfold = 5, # Use 5 fold cross-validation
+                    eta = etas_vec[2], # Set learning rate
+                    max.depth = bst_max_depth, # use best max depth
+                    min_child_weight = bst_min_child, 
+                    gamma = bst_gamma, # use best gamma
+                    subsample = bst_sub_samp, # use best subsample
+                    colsample_bytree =  bst_col_samp, # use best col sample
+                    nrounds = 1000, # Set number of rounds
+                    early_stopping_rounds = 20, 
+                    reg_lambda = bst_lambda,
+                    reg_alpha=bst_alpha,
+                    verbose = 1, # 1 - Prints out fit
+                    nthread = 1, # Set number of parallel threads
+                    print_every_n = 20) 
+
+set.seed(111111)
+bst_mod_3 <- xgb.cv(data = dtrain, # Set training data
+                    nfold = 5, # Use 5 fold cross-validation
+                    eta = etas_vec[3], # Set learning rate
+                    max.depth = bst_max_depth, # use best max depth
+                    min_child_weight = bst_min_child, 
+                    gamma = bst_gamma, # use best gamma
+                    subsample = bst_sub_samp, # use best subsample
+                    colsample_bytree =  bst_col_samp, # use best col sample
+                    nrounds = 1000, # Set number of rounds
+                    early_stopping_rounds = 20, 
+                    reg_lambda = bst_lambda,
+                    reg_alpha=bst_alpha,
+                    verbose = 1, # 1 - Prints out fit
+                    nthread = 1, # Set number of parallel threads
+                    print_every_n = 20) 
+
+set.seed(111111)
+bst_mod_4 <- xgb.cv(data = dtrain, # Set training data
+                    nfold = 5, # Use 5 fold cross-validation
+                    eta = etas_vec[4], # Set learning rate
+                    max.depth = bst_max_depth, # use best max depth
+                    min_child_weight = bst_min_child, 
+                    gamma = bst_gamma, # use best gamma
+                    subsample = bst_sub_samp, # use best subsample
+                    colsample_bytree =  bst_col_samp, # use best col sample
+                    nrounds = 1000, # Set number of rounds
+                    early_stopping_rounds = 20, 
+                    reg_lambda = bst_lambda,
+                    reg_alpha=bst_alpha,
+                    verbose = 1, # 1 - Prints out fit
+                    nthread = 1, # Set number of parallel threads
+                    print_every_n = 20) 
+
+set.seed(111111)
+bst_mod_5 <- xgb.cv(data = dtrain, # Set training data
+                    nfold = 5, # Use 5 fold cross-validation
+                    eta = etas_vec[5], # Set learning rate
+                    max.depth = bst_max_depth, # use best max depth
+                    min_child_weight = bst_min_child, 
+                    gamma = bst_gamma, # use best gamma
+                    subsample = bst_sub_samp, # use best subsample
+                    colsample_bytree =  bst_col_samp, # use best col sample
+                    nrounds = 1000, # Set number of rounds
+                    early_stopping_rounds = 20, 
+                    reg_lambda = bst_lambda,
+                    reg_alpha=bst_alpha,
+                    verbose = 1, # 1 - Prints out fit
+                    nthread = 1, # Set number of parallel threads
+                    print_every_n = 20) 
+
+# eta plots
+
+# Extract results for model with eta = 0.3
+pd1 <- cbind.data.frame(bst_mod_1$evaluation_log[,c("iter", "test_rmse_mean")], rep(0.3, nrow(bst_mod_1$evaluation_log)))
+names(pd1)[3] <- "eta"
+# Extract results for model with eta = 0.1
+pd2 <- cbind.data.frame(bst_mod_2$evaluation_log[,c("iter", "test_rmse_mean")], rep(0.1, nrow(bst_mod_2$evaluation_log)))
+names(pd2)[3] <- "eta"
+# Extract results for model with eta = 0.05
+pd3 <- cbind.data.frame(bst_mod_3$evaluation_log[,c("iter", "test_rmse_mean")], rep(0.05, nrow(bst_mod_3$evaluation_log)))
+names(pd3)[3] <- "eta"
+# Extract results for model with eta = 0.01
+pd4 <- cbind.data.frame(bst_mod_4$evaluation_log[,c("iter", "test_rmse_mean")], rep(0.01, nrow(bst_mod_4$evaluation_log)))
+names(pd4)[3] <- "eta"
+# Extract results for model with eta = 0.005
+pd5 <- cbind.data.frame(bst_mod_5$evaluation_log[,c("iter", "test_rmse_mean")], rep(0.005, nrow(bst_mod_5$evaluation_log)))
+names(pd5)[3] <- "eta"
+# Join datasets
+plot_data <- rbind.data.frame(pd1, pd2, pd3, pd4, pd5)
+# Converty ETA to factor
+plot_data$eta <- as.factor(plot_data$eta)
+# Plot points
+g_6 <- ggplot(plot_data, aes(x = iter, y = test_rmse_mean, color = eta))+
+  geom_point(alpha = 0.5) +
+  theme_bw() + # Set theme
+  theme(panel.grid.major = element_blank(), # Remove grid
+        panel.grid.minor = element_blank(), # Remove grid
+        panel.border = element_blank(), # Remove grid
+        panel.background = element_blank()) + # Remove grid 
+  labs(x = "Number of Trees", title = "RMSE v Number of Trees",
+       y = "RMSE", color = "Learning \n Rate")  # Set labels
+g_6
+
+# Plot lines
+g_7 <- ggplot(plot_data, aes(x = iter, y = test_rmse_mean, color = eta))+
+  geom_smooth(alpha = 0.5) +
+  theme_bw() + # Set theme
+  theme(panel.grid.major = element_blank(), # Remove grid
+        panel.grid.minor = element_blank(), # Remove grid
+        panel.border = element_blank(), # Remove grid
+        panel.background = element_blank()) + # Remove grid 
+  labs(x = "Number of Trees", title = "RMSE v Number of Trees",
+       y = "RMSE", color = "Learning \n Rate")  # Set labels
+g_7
+
+save(bst_mod_1, bst_mod_2, bst_mod_3, bst_mod_4, bst_mod_5, g_6, g_7, plot_data, 
+     file = "l1_dur_eta.rda")
+
+
+############################# TUNED MODEL ############################# 
+# fit final xgb model
+bst_eta <- .1
+
+set.seed(111111)
+bst_final_mod <- xgboost(
+    data = as.matrix(train_data[, -1]),  # Exclude the response variable
+    label = train_data$high_speed_distance_per_min,
+    booster = "gblinear",  # Use linear booster for regression
+    objective = "reg:linear",  # Specify regression as the objective
+    eval_metric = "rmse",  # Evaluation metric (Root Mean Squared Error)
+    nfold = 5, # Use 5 fold cross-validation
+    eta = bst_eta, # Set learning rate
+    max.depth = bst_max_depth, # use best max depth
+    min_child_weight = bst_min_child, 
+    gamma = bst_gamma, # use best gamma
+    subsample = bst_sub_samp, # use best subsample
+    colsample_bytree =  bst_col_samp, # use best col sample
+    nrounds = 2000, # Set number of rounds
+    early_stopping_rounds = 20, 
+    verbose = 1, # 1 - Prints out fit
+    nthread = 1, # Set number of parallel threads
+    reg_lambda = bst_lambda,
+    reg_alpha=bst_alpha,
+    print_every_n = 20)
+
+  
+# Make predictions on the test data
+bst_final_preds <- predict(bst_final_mod, as.matrix(test_data[, -1]))
+bst_final_actual<- test_data$high_speed_distance_per_min
+  
+# Calculate RMSE (Root Mean Squared Error) for model evaluation
+rmse <- sqrt(mean((bst_final_preds - test_data$high_speed_distance_per_min)^2))
+#You can also inspect the model's feature importance if needed
+tuned_importance <- xgb.importance(feature_names = colnames(as.matrix(train_data[, -1])),
+                             model = bst_final_mod)
+
+#preds1 <- predict(bst_1, dtest)
+bst_pred_data <- cbind.data.frame(bst_final_preds, bst_final_actual)
+names(bst_pred_data) <- c("predicted", "actual")
+bst_pred_data$difference <- bst_pred_data$actual - bst_pred_data$predicted
+bst_pred_data$time <- "post-tune"
+
+imp_mat <- xgb.importance(model = bst_final_mod) # Extract importance
+imp_plot <- xgb.plot.importance(imp_mat, top_n = 5, main = "Top 5 XGBoost Important Variables") # Plot importance (top 10 variables)
+
+xgb_imp_df <- data.frame(imp_mat) %>% 
+  select(all_of(c("Feature", "Importance")))
+
+imp_viz_post_tune <- ggplot(data=xgb_imp_df[1:5,], aes(x=Importance, 
+                                  y=reorder(Feature, -Importance, decreasing = TRUE))) + 
+  theme_minimal() + geom_col(fill=nd_navy) +
+  labs(title = "XG Boost Model Top 5 Most Important Variables", 
+       x = "Importance", y = "Variable") 
+
+soc1_full_preds_df <- rbind(bst_split_pred_data_pre_tune, bst_pred_data)
+
+
+ggplot(soc1_full_preds_df, aes(x = difference,
+                               y = after_stat(count / sum(count)),
+                               fill = time)) +
+  geom_histogram(data = subset(soc1_full_preds_df,
+                               time == "pre-tune"),
+                 alpha = 0.7, position = "identity", bins = 30) +
+  geom_histogram(data = subset(soc1_full_preds_df,
+                               time == "post-tune"),
+                 alpha = 0.5, position = "identity", bins = 30) +
+  scale_fill_manual(values = c("post-tune" = nd_green, "pre-tune" = nd_navy)) + 
+  xlim(-750, 500) +
+  ylim(0, .15) +
+  labs(title = "Histogram of Difference between Prediction vs Actual",
+       subtitle = "Distribution of Prediction Differences Pre & Post Tune",
+       x = "Difference between Actual and Prediction",
+       y = "Percent Frequency") +
+  theme_minimal()
+
+
+# soc1 Preds DATA VIZ
+post_tune_mod_pred_viz <- ggplot(bst_pred_data, aes(x = predicted, y = actual)) +
+  geom_point(color=ifelse(abs(bst_pred_data$difference) >= 100, nd_navy, nd_green)) +
+  geom_smooth(color=nd_gold) + theme_minimal() + ylim(0,1000) + xlim(0,1000)+
+  labs(title = xgb_viz_title, 
+    subtitle = paste(selected_sport, "Data;",
+                     "High Speed Distance Min:", 
+                     low_lim)) #"&", up_lim, sep=" "))
+
+# soc1 Preds - ADJUSTED AXES
+post_tune_mod_pred_viz_2 <- ggplot(bst_pred_data, aes(x = predicted, y = actual)) +
+  geom_point(color=ifelse(abs(bst_pred_data$difference) >= 100, nd_navy, nd_green)) +
+  geom_smooth(color=nd_gold) + theme_minimal() + ylim(0,750) + xlim(0,750)+
+  labs(title = xgb_viz_title, 
+    subtitle = paste(selected_sport, "Data;",
+                     "High Speed Distance Min:", 
+                     low_lim)) #"&", up_lim, sep=" "))
+
+summary(bst_pred_data$difference)
+
+quantile(bst_pred_data$difference, .10)
+hist(bst_pred_data$difference, freq=FALSE, breaks = 50, xlim = c(-750, 750))
+
+viz_time <- "post-tuning"
+post_tune_diff_hist <- ggplot(bst_pred_data,
+       aes(x = difference, #fill = color_condition_wt,
+           y = after_stat(count / sum(count)))) +
+  geom_histogram(fill = nd_green, alpha =.5) + xlim(-750,500) + ylim(0, .25)+
+  labs(title = "Histogram of Difference between Prediction vs Actual",
+       subtitle= paste0("High Speed Distance ", viz_time),
+       x = "Difference between Prediction and Actual",
+       y = "Percent Frequency") +
+  theme_minimal() 
+
+# ABSOLUTE VALUE HISTOGRAM
+abs_val_hist_post_tune <- ggplot(bst_pred_data,
+       aes(x = abs(difference), #fill = color_condition_wt,
+           y = after_stat(count / sum(count)))) +
+  geom_histogram(fill = nd_green, binwidth = 25) + xlim(0, 500)+
+  labs(title = "Histogram of Difference between Prediction vs Actual",
+       subtitle= paste0("High Speed Distance ", viz_time),
+       x = "Difference between Prediction and Actual",
+       y = "Percent Frequency") +
+  theme_minimal() 
+
+save(bst_final_mod, bst_pred_data, tuned_importance, imp_plot, xgb_imp_df,
+     soc1_full_preds_df, post_tune_mod_pred_viz, post_tune_mod_pred_viz_2,post_tune_diff_hist,
+     file = "l1_dur_bst_final_mod.rda")
+```
+

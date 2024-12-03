@@ -1,0 +1,946 @@
+---
+title: "Data Cleaning Process - All"
+author: "MSBA-SA Capstone"
+date: "Spring 2024"
+output: html_document
+---
+
+The file contains information relevant to the data cleaning throughout the data analysis process. Throughout the code, there are lines to uncomment, using `write.csv()` to save the data to the working directory. The team saved the cleaned data files and then loaded the files into the environment to save time throughout the process. 
+
+## <span style= "color:#00843D" > DATA IMPORTATION & SET UP </span>
+
+```{r packages, warnings=FALSE, error=FALSE, message=FALSE}
+library(tidyverse)
+library(DescTools)
+library(janitor)
+library(ggplot2)
+library(jpeg)
+library(chron)
+library(lubridate)
+library(anytime)
+library(ggpubr)
+library(devtools) 
+#install_github("AppliedDataSciencePartners/xgboostExplainer")
+library(xgboost) # Load XGBoost
+library(caret) # Load Caret
+library(xgboostExplainer) # Load XGboost Explainer
+library(pROC) # Load proc
+library(SHAPforxgboost) # Load shap for XGBoost
+library(plyr)
+library(Metrics)
+
+# FOR WEB SCRAPING
+library(httr) 
+library(rvest) 
+library(polite) 
+library(jsonlite) 
+```
+
+```{r nd colors}
+# setting ND colors 
+nd_navy <- "#0C2340"
+nd_green <- "#00843D"
+nd_gold <- "#C99700"
+```
+
+```{r creating functions}
+calc_num_zeros_by_col <- function(df_title) {
+  cols_vec <- colnames(df_title)
+  zeros_count_vec <- rep("", length=length(cols_vec))
+  zeros_test_vec <- rep("", length=length(cols_vec))
+
+  for (i in 1:length(cols_vec)){
+    zeros_count_vec[i] <- sum(df_title[,i] == 0)
+    zeros_test_vec[i] <- sum(df_title[,i] == 0 | df_title[,i] == "0")
+  }
+
+  zero_count_df <- cbind.data.frame(cols_vec, as.numeric(zeros_count_vec))
+  names(zero_count_df) <- c("column_name", "number_zeros")
+
+  # Append df_title to the dataframe name
+  assign(paste0("zero_count_df_", deparse(substitute(df_title))), zero_count_df,
+         envir = .GlobalEnv)
+}
+```
+
+```{r}
+lax0_data <- read.csv("LAXdata0.csv") #reading in data
+lax1_data <- read.csv("LAXdata1.csv") #reading in data
+soc0_data <- read.csv("SOCdata0.csv") #reading in data
+soc1_data <- read.csv("SOCdata1.csv") #reading in data
+```
+
+
+## <span style= "color:#00843D" > DATA CLEANING - INITIAL </span>
+```{r}
+cutoff_val <- .95
+####################### LAX 0 ####################### 
+lax0_data <- clean_names(lax0_data) #cleaning names to snakecase
+#dim(lax0_data) #check dimensions
+#create a cutoff to use for dropping a column if more than that percent are zero
+drop_var_cutoff_lax0 <- dim(lax0_data)[1]*cutoff_val
+
+####################### LAX 1 #######################
+lax1_data <- clean_names(lax1_data)  #cleaning names to snakecase
+#dim(lax1_data) #check dimensions
+drop_var_cutoff_lax1 <- dim(lax1_data)[1]*cutoff_val #lax 1 drop cutoff
+
+####################### SOC 0 #######################
+soc0_data <- clean_names(soc0_data) #cleaning names to snakecase
+#dim(soc0_data) #check dimensions
+drop_var_cutoff_soc0 <- dim(soc0_data)[1]*cutoff_val #soc 0 drop cutoff
+
+####################### SOC 1 #######################
+soc1_data <- clean_names(soc1_data) #cleaning names to snakecase
+#dim(soc1_data) #check dimensions
+drop_var_cutoff_soc1 <- dim(soc1_data)[1]*cutoff_val #soc 0 drop cutoff
+```
+
+
+```{r}
+cols_to_remove_vec <- c("month_name", "day_name", "x",
+                        "team_name", "total_activities", "athlete_weight", 
+                        "player_name", "jersey")
+
+####################### LAX 0 #######################
+calc_num_zeros_by_col(lax0_data)
+#zero_count_df_lax0_data
+miss_over_cutoff_perc_df_lax0_data <- zero_count_df_lax0_data %>% 
+  filter(number_zeros >= drop_var_cutoff_lax0)
+lax0_data <- lax0_data %>%
+  select(-one_of(miss_over_cutoff_perc_df_lax0_data$column_name)) %>%
+  select(!all_of(cols_to_remove_vec)) %>%
+  select(-contains("heart")) 
+
+# changing position name to a numeric factor
+lax0_data$position_name <- as.numeric(revalue(lax0_data$position_name, 
+        c("Attack"=1, "D-Mid"=2, "Defense"=3, 
+          "FOS"=4, "LSM"=5, "Midfield"=6)))
+
+# adding a column for a "unique session" --> player, date, start time
+lax0_data$unique_session <- paste(lax0_data$name_id, 
+                                  lax0_data$date, 
+                                  lax0_data$unix_start_time, 
+                                  sep="-")
+```
+
+```{r}
+####################### LAX 1 #######################
+calc_num_zeros_by_col(lax1_data)
+#zero_count_df_lax1_data
+miss_over_cutoff_perc_df_lax1_data <- zero_count_df_lax1_data %>%
+  filter(number_zeros >= drop_var_cutoff_lax1)
+lax1_data <- lax1_data %>%
+  select(-one_of(miss_over_cutoff_perc_df_lax1_data$column_name)) %>%
+  select(-contains(cols_to_remove_vec))
+
+# changing position name to a numeric factor
+pos_options <- unique(lax1_data$position_name)
+lax1_data$position_name <- as.numeric(revalue(lax1_data$position_name, 
+        c("Midfielder"=1, "Midfielder - Attacking"=2, "Attacker"=3, 
+          "Defender"=4, "Midfielder - Defensive"=5)))
+
+# adding a column for a "unique session" --> player, date, start time
+lax1_data$unique_session <- paste(lax1_data$name_id, 
+                                  lax1_data$date, 
+                                  lax1_data$start_time, 
+                                  sep="-")
+```
+
+```{r}
+####################### SOC 0 #######################
+calc_num_zeros_by_col(soc0_data)
+#zero_count_df_soc1_data
+miss_over_cutoff_perc_df_soc0_data <- zero_count_df_soc0_data %>%
+  filter(number_zeros >= drop_var_cutoff_soc0)
+soc0_data <- soc0_data %>%
+  select(-one_of(miss_over_cutoff_perc_df_soc0_data$column_name)) %>%
+  select(-contains(cols_to_remove_vec))
+
+# changing position name to a numeric factor
+pos_options <- unique(soc0_data$position_name)
+soc0_data$position_name <- as.numeric(revalue(soc0_data$position_name, 
+        c("Center Back"=4,
+          "Center Mid"=2,
+          "Forward"=1,
+          "Outside Mid"=6, 
+          "Outside Back"=5,
+          "GoalKeeper"=0, 
+          "6/8"=3,#midfield
+          "2/3"=5,#outside back
+          "7/11"=1,  #outside forward
+          "9"  =1, #striker
+          "1" = 0, #GK 
+          "4/5" =4,
+          "Goalkeeper"=0, 
+          "Defensive Line"=4, 
+          "Defensive Back"   =4,
+          "Central Midfielder"=3, 
+          "Defender"=4,
+          "Missing Position"=7, 
+          "Fullback"=5, 
+          "Central Defender"=4, 
+          "Winger"=6)))
+
+# adding a column for a "unique session" --> player, date, start time
+soc0_data$unique_session <- paste(soc0_data$name_id, 
+                                  soc0_data$date, 
+                                  soc0_data$start_time, 
+                                  sep="-")
+```
+
+```{r}
+####################### SOC 1 #######################
+calc_num_zeros_by_col(soc1_data)
+#zero_count_df_soc1_data
+miss_over_cutoff_perc_df_soc1_data <- zero_count_df_soc1_data %>%
+  filter(number_zeros >= drop_var_cutoff_soc1)
+soc1_data <- soc1_data %>%
+  select(-one_of(miss_over_cutoff_perc_df_soc1_data$column_name)) %>%
+  select(-contains(cols_to_remove_vec)) %>%
+  select(-contains(c("average_high_speed_distance",
+  "high_speed_running_distance")))
+
+
+# FORWARD 1, MIDFIELD 2, BACK 3, Utility 4, WINGER 5, GK 0
+soc1_data$position_name <- as.numeric(revalue(soc1_data$position_name, 
+        c("Forward"=1, "Midfield"=2, "Center Back" = 3,
+          "Striker"=1, "Keeper" = 0, "Outside Back" = 4,
+          "Center Midfield"=2, "Defender"=3, "Midfielder" = 2, 
+          "Goal Keeper"=0, "Defensive Midfielder"=2, "Central Midfielder"=2,
+          "Attacking Midfielder"=2, "Centre Back"=3, "Utility"=4, 
+          "Wing"=5, "Back"=3, "Wide"=5)))
+
+# adding a column for a "unique session" --> player, date, start time
+soc1_data$unique_session <- paste(soc1_data$name_id, 
+                                  soc1_data$date, 
+                                  soc1_data$start_time, 
+                                  sep="-")
+```
+
+
+```{r}
+lax0_data$location <- as.factor(ifelse(lax0_data$total_distance == 0,
+                                       "indoor", "outdoor"))
+lax1_data$location <- as.factor(ifelse(lax1_data$total_distance == 0,
+                                       "indoor", "outdoor"))
+soc0_data$location <- as.factor(ifelse(soc0_data$total_distance == 0,
+                                       "indoor", "outdoor"))
+soc1_data$location <- as.factor(ifelse(soc1_data$total_distance == 0,
+                                       "indoor", "outdoor"))
+
+not_include_indoor_vec <- c("duration", "distance", "meta", "total_effort", 
+                            "heart_rate", "hr", "velocity", "acceleration",
+                            "deceleration", "metre", "meterage",
+                            "exertion_index","max_vel_max", 
+                            "footstrikes", "running_series_count", 
+                            "running_imbalance")
+
+lax0_indoor_full_df <- lax0_data %>%
+  filter(location=="indoor") %>%
+  select(-contains(not_include_indoor_vec))
+
+lax1_indoor_full_df <- lax1_data %>%
+  filter(location=="indoor") %>%
+  select(-contains(not_include_indoor_vec))
+
+soc0_indoor_full_df <- soc0_data %>%
+  filter(location=="indoor") %>%
+  select(-contains(not_include_indoor_vec))
+
+soc1_indoor_full_df <- soc1_data %>%
+  filter(location=="indoor") %>%
+  select(-contains(not_include_indoor_vec))
+```
+
+
+
+```{r}
+# testing_names_vec <- lax0_data %>% select_if(is.character) %>%
+#   select(contains(c("time", "duration"))) %>% names()
+  
+# for (i in seq_along(testing_names_vec)) {
+#   col_name <- testing_names_vec[i]
+#   
+#   lax0_data[[col_name]] <- chron(times = lax0_data[[col_name]])
+#   lax0_data[[col_name]] <- hms(lax0_data[[col_name]])
+#   lax0_data[[col_name]] <- hour(lax0_data[[col_name]])*60 +
+#     minute(lax0_data[[col_name]])
+# }
+
+
+#################################### LAx 0 #############################
+dur_chr_df <- lax0_data %>% 
+  select(contains(c("duration", "time")))%>% 
+  select_if(is.character)
+
+for (q in seq_along(names(dur_chr_df))){
+  col_vec <- dur_chr_df[, q]
+  col_name <- names(dur_chr_df[q])
+
+  col_vec <- str_replace_all(col_vec, pattern="[[:punct:]]", replacement = "")
+  
+  for (r in 1:length(col_vec)){
+   hrs_val <- as.numeric(substr(col_vec[r], 1, 2))
+   min_val <- as.numeric(substr(col_vec[r], 3, 4))
+   tot_min <- as.numeric((hrs_val*60) + min_val) 
+   col_vec[r] <- tot_min
+  }
+  
+  dur_chr_df[, q] <- as.numeric(col_vec)
+  lax0_data[[col_name]] <- dur_chr_df[, q]
+}
+
+
+
+
+#################################### LAX 1 #############################
+dur_chr_df <- lax1_data %>%
+  select(contains(c("duration", "time")))%>%
+  select_if(is.character)
+
+for (q in seq_along(names(dur_chr_df))){
+  col_vec <- dur_chr_df[, q]
+  col_name <- names(dur_chr_df[q])
+
+  col_vec <- str_replace_all(col_vec, pattern="[[:punct:]]", replacement = "")
+
+  for (r in 1:length(col_vec)){
+   hrs_val <- as.numeric(substr(col_vec[r], 1, 2))
+   min_val <- as.numeric(substr(col_vec[r], 3, 4))
+   tot_min <- as.numeric((hrs_val*60) + min_val)
+   col_vec[r] <- tot_min
+  }
+
+  dur_chr_df[, q] <- as.numeric(col_vec)
+  lax1_data[[col_name]] <- dur_chr_df[, q]
+}
+
+
+
+
+
+
+#################################### SOC 0 #############################
+dur_chr_df <- soc0_data %>%
+  select(contains(c("duration", "time"))) %>%
+  select_if(is.character)
+
+for (q in seq_along(names(dur_chr_df))){
+  col_vec <- dur_chr_df[, q]
+  col_name <- names(dur_chr_df[q])
+
+  col_vec <- str_replace_all(col_vec, pattern="[[:punct:]]", replacement = "")
+
+  for (r in 1:length(col_vec)){
+   hrs_val <- as.numeric(substr(col_vec[r], 1, 2))
+   min_val <- as.numeric(substr(col_vec[r], 3, 4))
+   tot_min <- as.numeric((hrs_val*60) + min_val)
+   col_vec[r] <- tot_min
+  }
+
+  dur_chr_df[, q] <- as.numeric(col_vec)
+  soc0_data[[col_name]] <- dur_chr_df[, q]
+}
+
+
+
+
+#################################### SOC 1 #############################
+dur_chr_df <- soc1_data %>%
+  select(contains(c("duration", "time")))%>%
+  select_if(is.character)
+
+for (q in seq_along(names(dur_chr_df))){
+  col_vec <- dur_chr_df[, q]
+  col_name <- names(dur_chr_df[q])
+
+  col_vec <- str_replace_all(col_vec, pattern="[[:punct:]]", replacement = "")
+
+  for (r in 1:length(col_vec)){
+   hrs_val <- as.numeric(substr(col_vec[r], 1, 2))
+   min_val <- as.numeric(substr(col_vec[r], 3, 4))
+   tot_min <- as.numeric((hrs_val*60) + min_val)
+   col_vec[r] <- tot_min
+  }
+
+  dur_chr_df[, q] <- as.numeric(col_vec)
+  soc1_data[[col_name]] <- dur_chr_df[, q]
+}
+```
+
+
+### <span style= "color:#00843D" > ADDING GAME/TRAINING COLUMN </span>
+retrieving information from scraped game data
+```{r}
+# need to first run the scraping sports schedule file to save the following data in the environment
+#source("scraping_sport_schedules.r")
+lax0_game_dates <- read.csv(".//Exported_CSVs//lax0_game_dates.csv")$x
+lax1_game_dates <- read.csv(".//Exported_CSVs//lax1_game_dates.csv")$x
+soc0_game_dates <- read.csv(".//Exported_CSVs//soc0_game_dates.csv")$x
+soc1_game_dates <- read.csv(".//Exported_CSVs//soc1_game_dates.csv")$x
+```
+
+
+```{r}
+
+####################### LAX 0 #######################
+lax0_data$activity_type <- as.factor(ifelse(lax0_data$date %in% lax0_game_dates, 
+                                  "game", "training"))
+lax0_data$activity_type_binary <- as.numeric(ifelse(lax0_data$date %in% lax0_game_dates, 
+                                  1, 0))
+
+####################### LAX 1 #######################
+lax1_data$activity_type <- as.factor(ifelse(lax1_data$date %in% lax1_game_dates, 
+                                  "game", "training"))
+lax1_data$activity_type_binary <- as.numeric(ifelse(lax1_data$date %in% lax1_game_dates, 
+                                  1, 0))
+
+####################### SOC 0 #######################
+soc0_data$activity_type <- as.factor(ifelse(soc0_data$date %in% soc0_game_dates, 
+                                  "game", "training"))
+soc0_data$activity_type_binary <- as.numeric(ifelse(soc0_data$date %in% soc0_game_dates, 
+                                  1, 0))
+
+####################### SOC 1 #######################
+soc1_data$activity_type <- as.factor(ifelse(soc1_data$date %in% soc1_game_dates, 
+                                  "game", "training"))
+soc1_data$activity_type_binary <- as.numeric(ifelse(soc1_data$date %in% soc1_game_dates, 
+                                  1, 0))
+```
+
+Uncomment the following lines to save the cleaned data as a csv
+```{r}
+# write.csv(lax0_data,".\\Exported_CSVs\\lax0_data_cleaned.csv",row.names=FALSE)
+# 
+# write.csv(lax1_data,".\\Exported_CSVs\\lax1_data_cleaned.csv",row.names=FALSE)
+# 
+# write.csv(soc0_data,".\\Exported_CSVs\\soc0_data_cleaned.csv",row.names=FALSE)
+# 
+# write.csv(soc1_data,".\\Exported_CSVs\\soc1_data_cleaned.csv",row.names=FALSE)
+
+#loading in data to confirm
+# cleaned_data_lax0 <- read.csv(".\\Exported_CSVs\\lax0_data_cleaned.csv") 
+```
+
+
+### <span style= "color:#00843D" > COMBINING SOCCER DATA TOGETHER INTO ONE DATASET FOR MODELING </span>
+
+##### LOADING CLEAN DATA 
+```{r}
+soc0_data <- read.csv(".\\Exported_CSVs\\soc0_data_cleaned_up_pos.csv") 
+soc1_data <- read.csv(".\\Exported_CSVs\\soc1_data_cleaned_up_pos.csv") 
+```
+
+```{r}
+not_include_indoor_vec <- c("meta", "total_effort", 
+                            "heart_rate", "hr", "velocity", "acceleration",
+                            "deceleration", "metre", "meterage",
+                            "exertion_index","max_vel_max", 
+                            "footstrikes", "running_series_count", 
+                            "running_imbalance"#," distance", "duration"
+                            )
+
+length(names(soc0_data)) #826 columns
+length(names(soc1_data)) #701 columns
+
+
+# indoor_diff_01 <- setdiff(names(soc0_data), names(soc1_data))
+# indoor_diff_10 <- setdiff(names(soc1_data), names(soc0_data))
+# full_indoor_diff <- c(indoor_diff_01, indoor_diff_10)
+
+# testing_vec <- c("velocity_band_6_distance_band_1_total_efforts", 
+#                  "velocity_band_7_distance_band_1_total_efforts", 
+#                  "velocity_band_7_recovery_band_2_total_efforts" , 
+#                  "velocity_b2_average_effort_distance_gen_2_set_2",
+#                  "velocity_b2_total_efforts_gen_2_set_2")
+
+#names(soc1_data) <- str_replace_all(names(soc1_data), "_b([0-9])", "_band_\\1")
+
+# diff01 <- setdiff(names(soc0_data), names(soc1_data))
+# diff10 <- setdiff(names(soc1_data), names(soc0_data))
+# 
+# full_diff <- c(diff01, diff10)
+# length(full_diff) #245 originally
+
+cols_exclude <- c("mii", "metabolic", "heart_rate", "_set_2")
+soc0_data <- soc0_data %>% 
+  select(!contains(cols_exclude))
+
+soc1_data <- soc1_data %>% 
+  select(!contains(cols_exclude))
+
+soc1_data <- soc1_data %>%
+  dplyr::rename(
+    velocity_band_1_total_distance = velocity_band_1_0_45mph_total_distance,
+    velocity_band_2_total_distance = velocity_band_2_45_4_05mph_total_distance,
+    velocity_band_3_total_distance = velocity_band_3_4_05_7_14mph_total_distance,
+    velocity_band_4_total_distance = velocity_band_4_7_14_9_64mph_total_distance,
+    velocity_band_5_total_distance = velocity_band_5_9_64_12_12mph_total_distance,
+    velocity_band_6_total_distance = velocity_band_6_12_12_14_61mph_total_distance,
+    velocity_band_7_total_distance = velocity_band_7_14_61_mph_total_distance, 
+    high_speed_distance = total_high_speed_distance, 
+    pl_hi=pl_hi_session
+  )
+
+soc0_data$med_and_hi_ima_r <- soc0_data$ima_co_d_right_medium_1_0+soc0_data$ima_co_d_right_high_1_0
+soc0_data$med_and_hi_ima_l <- soc0_data$ima_co_d_left_medium_1_0+soc0_data$ima_co_d_left_high_1_0
+#names(soc1_data)
+
+fr0 <- soc0_data %>% select(contains("ima_free_running")) %>% names()
+fr1 <- soc1_data %>% select(contains("ima_free_running")) %>% names()
+
+free_run_exclude <- setdiff(fr0, fr1)
+
+soc0_data <- soc0_data %>% select(-contains(c(free_run_exclude)))
+```
+
+```{r}
+diff01 <- setdiff(names(soc0_data), names(soc1_data))
+diff10 <- setdiff(names(soc1_data), names(soc0_data))
+
+
+full_diff <- c(diff01, diff10)
+length(full_diff) #245 originally
+
+soc1_indoor_full_df <- soc1_data %>%
+  select(-contains(not_include_indoor_vec))
+
+soc0_indoor_full_df <- soc0_data %>%
+  select(-contains(not_include_indoor_vec))
+
+
+# should only look at differences for variables available indoors
+indoor_diff_01 <- setdiff(names(soc0_indoor_full_df), names(soc1_indoor_full_df))
+indoor_diff_10 <- setdiff(names(soc1_indoor_full_df), names(soc0_indoor_full_df))
+full_indoor_diff <- c(indoor_diff_01, indoor_diff_10)
+```
+
+
+```{r}
+exclude_to_combine <- full_indoor_diff
+# soc0_indoor_full_df <- soc0_indoor_full_df %>% select(-contains(c(exclude_to_combine)))
+# soc1_indoor_full_df <- soc1_indoor_full_df 
+
+soc1_indoor_full_df <- soc1_indoor_full_df %>%
+  #select(-contains(not_include_indoor_vec)) %>% 
+  select(-contains(c(exclude_to_combine)))
+
+soc0_indoor_full_df <- soc0_indoor_full_df %>%
+  #select(-contains(not_include_indoor_vec)) %>% 
+  select(-contains(c(exclude_to_combine)))
+
+# should only look at differences for variables available indoors
+indoor_diff_01 <- setdiff(names(soc0_indoor_full_df), names(soc1_indoor_full_df))
+indoor_diff_10 <- setdiff(names(soc1_indoor_full_df), names(soc0_indoor_full_df))
+full_indoor_diff <- c(indoor_diff_01, indoor_diff_10)
+
+
+# confirm names are sorted alphabetically
+# names(soc0_mod_sort)
+# names(soc1_mod_sort)
+dur_cols_remove0 <- soc0_indoor_full_df %>% 
+  select(contains("duration")) %>% names()
+dur_cols_remove1 <- soc1_indoor_full_df %>% 
+  select(contains("duration")) %>% names()
+dur_cols_remove <- c(dur_cols_remove0, dur_cols_remove1)
+dur_cols_remove <- dur_cols_remove[dur_cols_remove != "total_duration"]  
+
+dist_cols_remove0 <- soc0_indoor_full_df %>% 
+  select(contains("distance")) %>% names()
+dist_cols_remove1 <- soc1_indoor_full_df %>% 
+  select(contains("distance")) %>% names()
+dist_cols_remove <- c(dist_cols_remove0, dist_cols_remove1)
+dist_cols_remove <- dist_cols_remove[dist_cols_remove != "high_speed_distance"]  
+
+dist_dur_cols_remove <- c(dur_cols_remove, dist_cols_remove)
+
+soc0_indoor_full_df <- soc0_indoor_full_df %>%
+  select(-contains(dist_dur_cols_remove))
+
+soc1_indoor_full_df <- soc1_indoor_full_df %>%
+  select(-contains(dist_dur_cols_remove)) 
+#soc_full_mod_df$dist_dur_cols_remove
+
+soc0_indoor_full_df$team_gender <- 0
+soc1_indoor_full_df$team_gender <- 1
+
+soc0_mod_sort <- soc0_indoor_full_df %>% select(sort(names(.)))
+soc1_mod_sort <- soc1_indoor_full_df %>% select(sort(names(.)))
+
+dim(soc0_mod_sort)
+dim(soc1_mod_sort) 
+
+
+
+#binding dataframes
+soc_full_mod_df <- rbind.data.frame(soc0_mod_sort, soc1_mod_sort)
+```
+
+```{r}
+# write.csv(soc_full_mod_df,".\\Exported_CSVs\\comb_soc_data_cleaned.csv",row.names=FALSE)
+```
+
+
+```{r}
+players <- unique(soc_full_mod_df$name_id)
+
+z_prep_mod_df <- soc_full_mod_df
+
+full_df <- as.data.frame(matrix(ncol=dim(z_prep_mod_df)[2]))
+names(full_df) <- names(z_prep_mod_df)
+
+for(i in 1:length(players)){
+  player_df <- z_prep_mod_df[z_prep_mod_df$name_id == players[i],]
+  
+  df_non_num <- player_df %>% select_if(is.character)
+  df_num <- player_df %>% select_if(is.numeric)
+  
+  df_num <- scale(df_num)
+  combined <- cbind(df_non_num, df_num)
+  full_df <- rbind(full_df, combined)
+}
+
+full_df <- full_df[-1,]
+names(full_df) <- paste0(names(full_df), "_z") 
+
+z_score_df <- full_df %>% select(-contains(c("name_id")))
+```
+
+
+
+```{r}
+comb_z_df <- merge(soc_full_mod_df, z_score_df, 
+                   by.x = "unique_session", by.y = "unique_session_z",
+                   all.x=TRUE)
+#head(comb_z_df)
+```
+
+
+
+```{r warning=FALSE}
+num_col_names <- soc_full_mod_df %>% select_if(is.numeric) %>% names()
+num_col_names_indoor <- num_col_names[num_col_names %in% names(soc_full_mod_df)]
+
+#to_remove_vec <- c("unix", "position_name_z")
+
+test_df <- soc_full_mod_df %>%
+  select(all_of(c("unique_session","name_id", "high_speed_distance", num_col_names_indoor))) #%>%
+  #select(-contains(to_remove_vec))
+
+comb_z_df_outdoor <- comb_z_df %>%
+  filter(high_speed_distance != 0)
+
+
+include_mod_cols <- c("high_speed_distance", names(test_df), names(z_score_df))
+
+comb_z_df_mod <- comb_z_df_outdoor[, names(comb_z_df_outdoor) %in% include_mod_cols]
+comb_z_df_full <- comb_z_df[, names(comb_z_df) %in% include_mod_cols]
+
+#names(comb_z_df_full)
+
+chr_z_remove <- comb_z_df_full %>% select_if(is.character) %>%
+  select(contains("_z")) %>% names()
+num_z_remove <- comb_z_df_full %>% select_if(is.numeric) %>% 
+  select(contains(c("binary", "position", "gender", "start_time", "end_time"))) %>%
+  select(contains("z")) %>% names()
+
+remove_vec <- c(chr_z_remove, num_z_remove)
+comb_z_df_full <- comb_z_df_full %>% select(-remove_vec)
+```
+
+
+```{r}
+# write.csv(comb_z_df_full,".\\Exported_CSVs\\comb_soc_data_cleaned_with_z_up_pos.csv",row.names=FALSE)
+```
+
+
+
+
+### <span style= "color:#00843D" > CLEANING LACROSSE DATA TO ENSURE `total_duration` IS INCLUDED FOR DURATION-ADJUSTED MODELING AND SAVING DATA WITH Z-SCORES </span>
+
+##### Men's Lacrosse
+
+Total Duration Included in CSV
+```{r}
+lax0_data <- read.csv(".\\Exported_CSVs\\lax0_data_cleaned.csv")
+lax0_data <- lax0_data %>%
+  dplyr::rename(high_speed_distance_perc=high_speed_distance, 
+                high_speed_distance=high_speed_distance_covered)
+
+
+
+not_include_indoor_vec <- c("meta", "total_effort", "heart_rate", "hr",
+                            "velocity", "acceleration", "deceleration", "metre",
+                            "meterage", "exertion_index","max_vel_max", 
+                            "footstrikes", "running_series_count", "running_imbalance")
+
+dur_var_names <- lax0_data %>% select(contains("duration")) %>% names()
+dur_var_names <- dur_var_names <- dur_var_names[dur_var_names != "total_duration"] 
+dist_var_names <- lax0_data %>% select(contains("distance")) %>% names()
+dist_var_names <- dist_var_names[dist_var_names != "high_speed_distance"] 
+not_include_indoor_vec <- c(not_include_indoor_vec, dur_var_names, dist_var_names)
+
+
+lax0_indoor_cols_df <- lax0_data %>%
+  filter(high_speed_distance > 0) %>%
+  select(-contains(not_include_indoor_vec))
+```
+
+```{r}
+#write.csv(lax0_indoor_cols_df,".\\Exported_CSVs\\lax0_data_cleaned_new.csv",row.names=FALSE)
+```
+
+```{r}
+#lax0_data <- read.csv("LAXdata0.csv") #reading in data
+
+lax0_data <- read.csv(".\\Exported_CSVs\\lax0_data_cleaned.csv") 
+
+lax0_data <- lax0_data %>%
+  dplyr::rename(high_speed_distance_perc = high_speed_distance, 
+                high_speed_distance = high_speed_distance_covered)
+
+
+not_include_indoor_vec <- c("meta", "total_effort", 
+                            "heart_rate", "hr", "velocity", "acceleration",
+                            "deceleration", "metre", "meterage",
+                            "exertion_index","max_vel_max", 
+                            "footstrikes", "running_series_count", 
+                            "running_imbalance")
+
+dur_var_names <- lax0_data %>% select(contains("duration")) %>% names()
+dur_var_names <- dur_var_names <- dur_var_names[dur_var_names != "total_duration"] 
+dist_var_names <- lax0_data %>% select(contains("distance")) %>% names()
+dist_var_names <- dist_var_names[dist_var_names != "high_speed_distance"] 
+
+not_include_indoor_vec <- c(not_include_indoor_vec, dur_var_names, dist_var_names)
+
+lax0_indoor_full_df <- lax0_data %>%
+  filter(high_speed_distance > 0) %>%
+  select(-contains(not_include_indoor_vec))
+
+lax0_mod_df <- lax0_indoor_full_df %>% 
+  filter(total_duration > 0) 
+
+num_col_names <- lax0_data %>% 
+  select_if(is.numeric) %>% 
+  names()
+
+num_col_names_indoor <- num_col_names[num_col_names %in% names(lax0_indoor_full_df)] 
+
+to_remove_vec <- c("unix", "position_name")
+
+test_df <- lax0_data %>% 
+  select(all_of(c("unique_session", "name_id", num_col_names_indoor))) %>%
+  select(-contains(to_remove_vec))
+
+
+players <- unique(lax0_data$name_id)
+
+z_prep_mod_df <- test_df
+
+full_df <- as.data.frame(matrix(ncol=dim(z_prep_mod_df)[2]))
+names(full_df) <- names(z_prep_mod_df)
+
+for(i in 1:length(players)){
+  player_df <- z_prep_mod_df[z_prep_mod_df$name_id == players[i],]
+  
+  df_non_num <- player_df %>% select_if(is.character)
+  df_num <- player_df %>% select_if(is.numeric)
+  
+  df_num <- scale(df_num)
+  combined <- cbind(df_non_num, df_num)
+  full_df <- rbind(full_df, combined)
+}
+
+full_df <- full_df[-1,]
+names(full_df) <- paste0(names(full_df), "_z") 
+
+z_score_df <- full_df %>% select(-contains(c("name_id")))
+
+comb_z_df <- merge(lax0_data, z_score_df, 
+                   by.x = "unique_session", by.y = "unique_session_z",
+                   all.x=TRUE)
+
+#head(comb_z_df)
+```
+
+##### PLAYER Z-SCORE CLEANING
+```{r}
+comb_z_df_outdoor <- comb_z_df %>%
+  filter(high_speed_distance != 0)
+
+include_mod_cols <- c("high_speed_distance", "position_name",
+                      names(test_df), names(z_score_df))
+
+comb_z_df_mod <- comb_z_df_outdoor[, names(comb_z_df_outdoor) %in% include_mod_cols]
+```
+
+```{r}
+model_df <- comb_z_df_mod %>% select(!contains(c("unique_session", "name_id"))) %>%
+  select("high_speed_distance", everything())
+
+num_col_names_indoor <- num_col_names[num_col_names %in% names(lax0_indoor_full_df)]
+
+to_remove_vec <- c("unix", "position_name_z")
+
+test_df <- lax0_data %>%
+  select(all_of(c("unique_session","name_id", "high_speed_distance", num_col_names_indoor))) %>%
+  select(-contains(to_remove_vec))
+
+comb_z_df_outdoor <- comb_z_df %>%
+  filter(high_speed_distance != 0)
+
+
+include_mod_cols <- c("high_speed_distance", names(test_df), names(z_score_df))
+
+comb_z_df_mod <- comb_z_df_outdoor[, names(comb_z_df_outdoor) %in% include_mod_cols]
+
+comb_z_df_full <- comb_z_df[, names(comb_z_df) %in% include_mod_cols]
+# 
+comb_z_df_full <- comb_z_df_full %>% filter(high_speed_distance >= 0)
+```
+
+
+```{r}
+# write.csv(comb_z_df_full,".\\Exported_CSVs\\lax0_data_cleaned_with_z.csv",row.names=FALSE)
+```
+
+
+
+##### Women's Lacrosse
+```{r}
+lax1_data <- read.csv(".\\Exported_CSVs\\lax1_data_cleaned.csv")
+lax1_data <- lax1_data %>%
+  dplyr::rename(high_speed_distance=high_speed_running_distance_session)
+
+
+not_include_indoor_vec <- c("meta", "total_effort", "heart_rate", "hr",
+                            "velocity", "acceleration", "deceleration", "metre",
+                            "meterage", "exertion_index","max_vel_max", 
+                            "footstrikes", "running_series_count", "running_imbalance")
+
+dur_var_names <- lax1_data %>% select(contains("duration")) %>% names()
+dur_var_names <- dur_var_names <- dur_var_names[dur_var_names != "total_duration"] 
+dist_var_names <- lax1_data %>% select(contains("distance")) %>% names()
+dist_var_names <- dist_var_names[dist_var_names != "high_speed_distance"] 
+not_include_indoor_vec <- c(not_include_indoor_vec, dur_var_names, dist_var_names)
+
+lax1_indoor_cols_df <- lax1_data %>%
+  #filter(high_speed_distance > 0) %>%
+  select(-contains(not_include_indoor_vec))
+```
+
+```{r}
+#write.csv(lax1_indoor_cols_df,".\\Exported_CSVs\\lax1_data_cleaned_new.csv",row.names=FALSE)
+```
+
+```{r}
+#lax1_data <- read.csv("LAXdata1.csv") #reading in data
+
+high_speed_dist_var_name <- "high_speed_distance"
+
+lax1_data <- read.csv(".\\Exported_CSVs\\lax1_data_cleaned.csv") 
+
+lax1_data <- lax1_data %>%
+  dplyr::rename(high_speed_distance=high_speed_running_distance_session)
+
+
+not_include_indoor_vec <- c("meta", "total_effort", 
+                            "heart_rate", "hr", "velocity", "acceleration",
+                            "deceleration", "metre", "meterage",
+                            "exertion_index","max_vel_max", 
+                            "footstrikes", "running_series_count", 
+                            "running_imbalance")
+
+dur_var_names <- lax1_data %>% select(contains("duration")) %>% names()
+dur_var_names <- dur_var_names <- dur_var_names[dur_var_names != "total_duration"] 
+dist_var_names <- lax1_data %>% select(contains("distance")) %>% names()
+dist_var_names <- dist_var_names[dist_var_names != "high_speed_distance"] 
+
+not_include_indoor_vec <- c(not_include_indoor_vec, dur_var_names, dist_var_names)
+
+lax1_indoor_full_df <- lax1_data %>%
+  filter(high_speed_distance > 0) %>%
+  select(-contains(not_include_indoor_vec))
+
+lax1_mod_df <- lax1_indoor_full_df %>% 
+  filter(total_duration > 0) 
+
+num_col_names <- lax1_data %>% 
+  select_if(is.numeric) %>% 
+  names()
+
+num_col_names_indoor <- num_col_names[num_col_names %in% names(lax1_indoor_full_df)] 
+
+to_remove_vec <- c("unix", "position_name")
+
+test_df <- lax1_data %>% 
+  select(all_of(c("unique_session", "name_id", num_col_names_indoor))) %>%
+  select(-contains(to_remove_vec))
+
+players <- unique(lax1_data$name_id)
+
+z_prep_mod_df <- test_df
+
+full_df <- as.data.frame(matrix(ncol=dim(z_prep_mod_df)[2]))
+names(full_df) <- names(z_prep_mod_df)
+
+for(i in 1:length(players)){
+  player_df <- z_prep_mod_df[z_prep_mod_df$name_id == players[i],]
+  
+  df_non_num <- player_df %>% select_if(is.character)
+  df_num <- player_df %>% select_if(is.numeric)
+  
+  df_num <- scale(df_num)
+  combined <- cbind(df_non_num, df_num)
+  full_df <- rbind(full_df, combined)
+}
+
+full_df <- full_df[-1,]
+names(full_df) <- paste0(names(full_df), "_z") 
+
+z_score_df <- full_df %>% select(-contains(c("name_id")))
+
+comb_z_df <- merge(lax1_data, z_score_df, 
+                   by.x = "unique_session", by.y = "unique_session_z",
+                   all.x=TRUE)
+
+
+comb_z_df_outdoor <- comb_z_df %>%
+  filter(high_speed_distance != 0)
+
+include_mod_cols <- c("high_speed_distance", "position_name",
+                      names(test_df), names(z_score_df))
+
+comb_z_df_mod <- comb_z_df_outdoor[, names(comb_z_df_outdoor) %in% include_mod_cols]
+```
+
+
+```{r modeling split - reg and z-score}
+model_df <- comb_z_df_mod %>% select(!contains(c("unique_session", "name_id"))) %>%
+  select("high_speed_distance", everything())
+
+num_col_names_indoor <- num_col_names[num_col_names %in% names(lax1_indoor_full_df)]
+
+to_remove_vec <- c("unix", "position_name_z", "total_duration_z")
+
+test_df <- lax1_data %>%
+  select(all_of(c("unique_session","name_id", "high_speed_distance", num_col_names_indoor))) %>%
+  select(-contains(to_remove_vec))
+
+comb_z_df_outdoor <- comb_z_df %>%
+  filter(high_speed_distance != 0)
+
+include_mod_cols <- c("high_speed_distance", names(test_df), names(z_score_df))
+
+comb_z_df_mod <- comb_z_df_outdoor[, names(comb_z_df_outdoor) %in% include_mod_cols]
+
+comb_z_df_full <- comb_z_df[, names(comb_z_df) %in% include_mod_cols]
+# 
+comb_z_df_full <- comb_z_df_full %>% filter(high_speed_distance >= 0)
+```
+
+```{r}
+# write.csv(comb_z_df_full,".\\Exported_CSVs\\lax1_data_cleaned_with_z.csv",row.names=FALSE) 
+```

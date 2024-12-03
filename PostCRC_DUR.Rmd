@@ -1,0 +1,818 @@
+---
+title: "PostTune_Code_032124"
+author: "Kaylin Slattery"
+date: "2024-03-21"
+output: html_document
+---
+# set up 
+```{r packages warnings=FALSE, error=FALSE, message=FALSE}
+library(tidyverse)
+library(DescTools)
+library(janitor)
+library(ggplot2)
+library(jpeg)
+# library(chron)
+# library(lubridate)
+# library(anytime)
+library(ggpubr)
+# library(devtools) 
+#install_github("AppliedDataSciencePartners/xgboostExplainer")
+library(xgboost) # Load XGBoost
+library(caret) # Load Caret
+# library(xgboostExplainer) # Load XGboost Explainer
+# library(pROC) # Load proc
+library(SHAPforxgboost) # Load shap for XGBoost
+library(plyr)
+library(Metrics)
+library(kableExtra)
+```
+
+```{r nd colors}
+# setting ND colors 
+nd_navy <- "#0C2340"
+nd_green <- "#00843D"
+nd_gold <- "#C99700"
+```
+
+
+
+#  ---------------------------- DURATION WITH Z-SCORES ----------------------------
+```{r}
+base_path <- ".\\CRC_RDAs\\Duration"
+team_dir <- "\\cs_z"
+file_abr <- "\\cs_dur_"
+file_names <- c("alpha_lambda.rda", "bst_final_mod.rda", 
+                "eta.rda", "gamma.rda", "min_child_max_depth.rda", 
+                "pre_tune_files.rda", "sample_colsample.rda")
+
+file_names_vec <- c()
+
+for (f in seq_along(file_names)){
+  new_name <- paste0(base_path, team_dir, file_abr, file_names[f])
+  file_names_vec <- c(file_names_vec, new_name)
+  
+  load(new_name)
+}
+
+
+# load(".\\CRC_RDAs\\lax1_r2\\lax1_alpha_lambda.rda")
+# #res_db, bst_lambda, bst_alpha, g_5,
+
+# load(".\\CRC_RDAs\\lax1_r2\\lax1_bst_final_mod.rda")
+# # bst_final_mod, bst_pred_data, tuned_importance, imp_plot, xgb_imp_df,
+# # lax1_full_preds_df, post_tune_mod_pred_viz,
+# # post_tune_mod_pred_viz_2, post_tune_diff_hist
+
+# load(".\\CRC_RDAs\\lax1_r2\\lax1_eta.rda")
+# #bst_mod_1, bst_mod_2, bst_mod_3, bst_mod_4, bst_mod_5,g_6, g_7, plot_data,
+
+# load(".\\CRC_RDAs\\lax1_r2\\lax1_gamma.rda")
+# # gam_df, bst_gamma,
+
+# load(".\\CRC_RDAs\\lax1_r2\\lax1_min_child_max_depth.rda")
+# # res_db, bst_max_depth, bst_min_child, g_2, 
+
+# load(".\\CRC_RDAs\\lax1_r2\\lax1_pre_tune_files.rda")
+# # prelim_importance, bst_split_pred_data_pre_tune, pred_viz_pre_tune, diff_hist_pre_tune
+
+# load(".\\CRC_RDAs\\lax1_r2\\lax1_sample_colsample.rda")
+# # res_db, bst_col_samp, bst_sub_samp, g_4, 
+
+tot_dur_df <- comb_dur_df %>% 
+  filter(high_speed_distance > 0) %>%
+  select(total_duration, high_speed_distance_per_min, high_speed_distance)
+  
+model_df
+
+options(scipen = 999) # turn off scientific notation
+#test_comb_tuned_df$pred_diff_meters <- test_comb_tuned_df$high_speed_distance - test_comb_tuned_df$hsd_pred
+
+# test_comb_tuned_df %>% 
+#   select(all_of(c("pred_diff_meters", "high_speed_distance", "hsd_pred")))
+# summary(test_comb_tuned_df$pred_diff_meters)
+
+
+
+options(scipen = 999) # turn off scientific notation
+set.seed(33) # Set Seed
+split_ratio <- 0.7
+train_row_ind <- sample(x=nrow(model_df), 
+                        size=floor(nrow(model_df) * split_ratio))
+
+# Split the data into training and testing sets
+train_data <- model_df[train_row_ind, ]
+test_data <- model_df[-train_row_ind, ]
+
+train_response = train_data[,1]
+train_x = train_data[,-1]
+test_response = test_data[,1]
+test_x = test_data[,-1]
+
+response <- model_df$high_speed_distance_per_min
+
+# Create training data XGBOOST
+dtrain <- xgb.DMatrix(data = as.matrix(train_data[ ,-1]), label = train_response)
+# Create test data XGBOOST
+dtest <- xgb.DMatrix(data = as.matrix(test_data[ ,-1]),label = test_response)
+
+tot_dur_df <- comb_dur_df %>% 
+  select(total_duration, high_speed_distance_per_min, high_speed_distance) %>%
+  filter(high_speed_distance > 0)
+#model_df[-train_row_ind, ]
+tot_dur_df_test <- tot_dur_df[-train_row_ind, ]
+dim(tot_dur_df_test)[1] == dim(test_data)[1]
+names(tot_dur_df_test) <- c("total_duration", "actual_hsd_per_min", "actual_hsd_meters")
+identical(tot_dur_df_test$actual_hsd_per_min, bst_pred_data$actual)
+
+test_comb_tuned_df <- cbind.data.frame(bst_pred_data, tot_dur_df_test)
+test_comb_tuned_df$pred_diff_meters <- test_comb_tuned_df$difference*test_comb_tuned_df$total_duration
+```
+
+
+```{r}
+dim(test_comb_tuned_df[abs(test_comb_tuned_df$pred_diff_meters) <= 150, ])[1]/(dim(test_comb_tuned_df)[1])
+xgb_imp_df[xgb_imp_df$Feature == "position_name", ] 
+
+#writeClipboard(xgb_imp_df[1:10, ]$Feature)
+```
+
+
+## Post-Tune Evaluation  
+### Important Variables
+```{r}
+# bst_final_mod, bst_pred_data, tuned_importance, imp_plot, xgb_imp_df,
+# lax1_full_preds_df, post_tune_mod_pred_viz,
+# post_tune_mod_pred_viz_2,post_tune_diff_hist
+
+xgb_imp_df
+ggplot(data=xgb_imp_df[1:10,], aes(x=Importance, 
+                                   y=reorder(Feature, -Importance, decreasing = TRUE))) + 
+  theme_minimal() + geom_col(fill=nd_green) +
+  labs(title = "XG Boost Model Top 5 Most Important Variables", 
+       x = "Importance", y = "Variable") 
+
+xgb_imp_df[1:10, ]$Feature
+```
+
+### Train RMSE line
+```{r}
+bst_final_mod$evaluation_log %>% 
+  pivot_longer(cols = c(train_rmse), names_to = "phase") %>% 
+  ggplot(aes(x = iter, y = value, color = phase)) + 
+  geom_line(color=nd_navy, size=2) + theme_minimal() +
+  labs(title = "Train RMSE - XGBoost")
+```
+
+### Histogram Pre & Post-Tune
+```{r}
+# ggplot(lax1_full_preds_df, aes(x = pred_diff_meters, y=..density.., fill = time)) +
+#   geom_histogram(data = subset(lax1_full_preds_df, time == "pre-tune"),
+#                  #alpha = 0.5, 
+#                  position = "identity", binwidth =50) +
+#   # geom_histogram(data = subset(lax1_full_preds_df, time == "post-tune"),
+#   #                alpha = 0.5, position = "identity", binwidth = 50) +
+#   scale_fill_manual(values = c("pre-tune" = nd_navy, "post-tune" = nd_green)) +
+#   labs(title = "Overlaying Histograms - lax1",
+#        x = "Residual (Actual - Predicted)", y = "Frequency") +
+#   theme_minimal() + xlim(-1025, 1025)
+
+ggplot(test_comb_tuned_df,
+       aes(x = pred_diff_meters, y=..density.., fill = time)) +
+  geom_histogram(alpha = 0.5, position = "identity", binwidth =50) +
+  # geom_histogram(data = subset(lax1_full_preds_df, time == "post-tune"),
+  #                alpha = 0.5, position = "identity", binwidth = 50) +
+  scale_fill_manual(values = c("pre-tune" = nd_navy, "post-tune" = nd_green)) +
+  labs(title = "Histograms",
+       x = "Residual (Actual - Predicted)", y = "Frequency") +
+  theme_minimal() + xlim(-1500, 1500)
+```
+
+### percent of preds within distance
+```{r}
+# lax1_post <- lax1_full_preds_df %>% filter(time == "post-tune")
+# dim(lax1_post[abs(lax1_post$pred_diff_meters) <= 150, ])[1]/(dim(lax1_post)[1]) #75.9%
+# 
+# lax1_pre <- lax1_full_preds_df %>% filter(time == "pre-tune")
+# dim(lax1_pre[abs(lax1_pre$pred_diff_meters) <= 150, ])[1]/(dim(lax1_pre)[1])
+# 
+# test_comb_df
+# 
+# summary(lax1_pre$pred_diff_meters)
+
+#test_comb_tuned_df$pred_diff_meters
+dim(test_comb_tuned_df[abs(test_comb_tuned_df$pred_diff_meters) <= 150, ])[1]/(dim(test_comb_tuned_df)[1])
+
+over500_diff <- dim(test_comb_tuned_df[abs(test_comb_tuned_df$pred_diff_meters) >= 500, ])[1]
+over250_diff <- dim(test_comb_tuned_df[abs(test_comb_tuned_df$pred_diff_meters) >= 250, ])[1]
+
+(over250_diff-over500_diff)/(dim(test_comb_tuned_df)[1])
+
+# 9 % between +-250
+```
+
+
+
+
+
+
+
+
+
+
+
+# Soccer
+## Loading from RDAs
+```{r}
+base_path <- ".\\CRC_RDAs\\Old Folders"
+team_dir <- "\\soc_dur"
+file_abr <- "\\cs_dur_"
+file_names <- c("alpha_lambda.rda", "bst_final_mod.rda", 
+                "eta.rda", "gamma.rda", "min_child_max_depth.rda", 
+                "pre_tune_files.rda", "sample_colsample.rda")
+
+file_names_vec <- c()
+
+for (f in seq_along(file_names)){
+  new_name <- paste0(base_path, team_dir, file_abr, file_names[f])
+  file_names_vec <- c(file_names_vec, new_name)
+  
+  load(new_name)
+}
+
+
+# load(".\\CRC_RDAs\\lax1_r2\\lax1_alpha_lambda.rda")
+# #res_db, bst_lambda, bst_alpha, g_5,
+
+# load(".\\CRC_RDAs\\lax1_r2\\lax1_bst_final_mod.rda")
+# # bst_final_mod, bst_pred_data, tuned_importance, imp_plot, xgb_imp_df,
+# # lax1_full_preds_df, post_tune_mod_pred_viz,
+# # post_tune_mod_pred_viz_2, post_tune_diff_hist
+
+# load(".\\CRC_RDAs\\lax1_r2\\lax1_eta.rda")
+# #bst_mod_1, bst_mod_2, bst_mod_3, bst_mod_4, bst_mod_5,g_6, g_7, plot_data,
+
+# load(".\\CRC_RDAs\\lax1_r2\\lax1_gamma.rda")
+# # gam_df, bst_gamma,
+
+# load(".\\CRC_RDAs\\lax1_r2\\lax1_min_child_max_depth.rda")
+# # res_db, bst_max_depth, bst_min_child, g_2, 
+
+# load(".\\CRC_RDAs\\lax1_r2\\lax1_pre_tune_files.rda")
+# # prelim_importance, bst_split_pred_data_pre_tune, pred_viz_pre_tune, diff_hist_pre_tune
+
+# load(".\\CRC_RDAs\\lax1_r2\\lax1_sample_colsample.rda")
+# # res_db, bst_col_samp, bst_sub_samp, g_4, 
+
+options(scipen = 999) # turn off scientific notation
+test_comb_tuned_df$pred_diff_meters <- test_comb_tuned_df$high_speed_distance - test_comb_tuned_df$hsd_pred
+
+test_comb_tuned_df %>% 
+  select(all_of(c("pred_diff_meters", "high_speed_distance", "hsd_pred")))
+summary(test_comb_tuned_df$pred_diff_meters)
+
+
+
+options(scipen = 999) # turn off scientific notation
+test_comb_df$pred_diff_meters <- test_comb_df$high_speed_distance - test_comb_df$hsd_pred
+
+test_comb_df %>% 
+  select(all_of(c("pred_diff_meters", "high_speed_distance", "hsd_pred")))
+summary(test_comb_df$pred_diff_meters)
+
+#lax1_full_preds_df <- rbind.data.frame(test_comb_df, test_comb_tuned_df)
+
+test_comb_tuned_df
+
+```
+
+## Post-Tune Evaluation  
+### Important Variables
+```{r}
+# bst_final_mod, bst_pred_data, tuned_importance, imp_plot, xgb_imp_df,
+# lax1_full_preds_df, post_tune_mod_pred_viz,
+# post_tune_mod_pred_viz_2,post_tune_diff_hist
+
+xgb_imp_df
+ggplot(data=xgb_imp_df[1:10,], aes(x=Importance, 
+                                   y=reorder(Feature, -Importance, decreasing = TRUE))) + 
+  theme_minimal() + geom_col(fill=nd_green) +
+  labs(title = "XG Boost Model Top 5 Most Important Variables", 
+       x = "Importance", y = "Variable") 
+
+xgb_imp_df[1:10, ]$Feature
+```
+
+### Train RMSE line
+```{r}
+bst_final_mod$evaluation_log %>% 
+  pivot_longer(cols = c(train_rmse), names_to = "phase") %>% 
+  ggplot(aes(x = iter, y = value, color = phase)) + geom_line(color=nd_navy, size=2) + theme_minimal() +
+  labs(title = "Train RMSE - lax1 XGBoost")
+```
+
+### Histogram Pre & Post-Tune
+```{r}
+# ggplot(lax1_full_preds_df, aes(x = pred_diff_meters, y=..density.., fill = time)) +
+#   geom_histogram(data = subset(lax1_full_preds_df, time == "pre-tune"),
+#                  #alpha = 0.5, 
+#                  position = "identity", binwidth =50) +
+#   # geom_histogram(data = subset(lax1_full_preds_df, time == "post-tune"),
+#   #                alpha = 0.5, position = "identity", binwidth = 50) +
+#   scale_fill_manual(values = c("pre-tune" = nd_navy, "post-tune" = nd_green)) +
+#   labs(title = "Overlaying Histograms - lax1",
+#        x = "Residual (Actual - Predicted)", y = "Frequency") +
+#   theme_minimal() + xlim(-1025, 1025)
+
+ggplot(test_comb_tuned_df,
+       aes(x = pred_diff_meters, y=..density.., fill = time)) +
+  geom_histogram(alpha = 0.5, position = "identity", binwidth =50) +
+  # geom_histogram(data = subset(lax1_full_preds_df, time == "post-tune"),
+  #                alpha = 0.5, position = "identity", binwidth = 50) +
+  scale_fill_manual(values = c("pre-tune" = nd_navy, "post-tune" = nd_green)) +
+  labs(title = "Histograms - soc",
+       x = "Residual (Actual - Predicted)", y = "Frequency") +
+  theme_minimal() + xlim(-1025, 1025)
+```
+
+### percent of preds within distance
+```{r}
+# lax1_post <- lax1_full_preds_df %>% filter(time == "post-tune")
+# dim(lax1_post[abs(lax1_post$pred_diff_meters) <= 150, ])[1]/(dim(lax1_post)[1]) #75.9%
+# 
+# lax1_pre <- lax1_full_preds_df %>% filter(time == "pre-tune")
+# dim(lax1_pre[abs(lax1_pre$pred_diff_meters) <= 150, ])[1]/(dim(lax1_pre)[1])
+# 
+# test_comb_df
+# 
+# summary(lax1_pre$pred_diff_meters)
+
+#test_comb_tuned_df$pred_diff_meters
+dim(test_comb_tuned_df[abs(test_comb_tuned_df$pred_diff_meters) <= 150, ])[1]/(dim(test_comb_tuned_df)[1])
+
+over500_diff <- dim(test_comb_tuned_df[abs(test_comb_tuned_df$pred_diff_meters) >= 500, ])[1]
+over250_diff <- dim(test_comb_tuned_df[abs(test_comb_tuned_df$pred_diff_meters) >= 250, ])[1]
+
+(over250_diff-over500_diff)/(dim(test_comb_tuned_df)[1])
+
+# 9 % between +-250
+```
+
+### OLD Loading from RDAs
+```{r}
+base_path <- ".\\CRC_RDAs\\duration"
+team_dir <- "\\soc"
+file_abr <- "\\cs_dur_"
+file_names <- c("alpha_lambda.rda", "bst_final_mod.rda", 
+                "eta.rda", "gamma.rda", "min_child_max_depth.rda", 
+                "pre_tune_files.rda", "sample_colsample.rda")
+
+file_names_vec <- c()
+
+for (f in seq_along(file_names)){
+  new_name <- paste0(base_path, team_dir, file_abr, file_names[f])
+  file_names_vec <- c(file_names_vec, new_name)
+  
+  load(new_name)
+}
+
+
+
+# load(".\\CRC_RDAs\\duration\\cs_dur_alpha_lambda.rda")
+# #res_db, bst_lambda, bst_alpha, g_5,
+# load(".\\CRC_RDAs\\soc_dur\\cs_dur_bst_final_mod.rda")
+# # bst_final_mod, bst_pred_data, tuned_importance, imp_plot, xgb_imp_df,
+# # full_preds_df, post_tune_mod_pred_viz,
+# # post_tune_mod_pred_viz_2,post_tune_diff_hist
+# load(".\\CRC_RDAs\\soc_dur\\cs_dur_eta.rda")
+# #bst_mod_1, bst_mod_2, bst_mod_3, bst_mod_4, bst_mod_5,g_6, g_7, plot_data,
+# load(".\\CRC_RDAs\\soc_dur\\cs_dur_gamma.rda")
+# # gam_df, bst_gamma,
+# load(".\\CRC_RDAs\\soc_dur\\cs_dur_min_child_max_depth.rda")
+# # res_db, bst_max_depth, bst_min_child, g_2, 
+# load(".\\CRC_RDAs\\soc_dur\\cs_dur_pre_tune_files.rda")
+# # prelim_importance, bst_split_pred_data_pre_tune, pred_viz_pre_tune, diff_hist_pre_tune
+# load(".\\CRC_RDAs\\soc_dur\\cs_dur_sample_colsample.rda")
+# # res_db, bst_col_samp, bst_sub_samp, g_4, 
+
+
+bst_split_pred_data_pre_tune
+bst_pred_data
+#full_pred_soc_df <- rbind.data.frame(bst_split_pred_data_pre_tune, bst_pred_data)
+#test_comb_df
+
+options(scipen = 999) # turn off scientific notation
+test_comb_tuned_df$pred_diff_meters <- test_comb_tuned_df$high_speed_distance - test_comb_tuned_df$hsd_pred
+
+test_comb_tuned_df %>% 
+  select(all_of(c("pred_diff_meters", "high_speed_distance", "hsd_pred")))
+summary(test_comb_tuned_df$pred_diff_meters)
+# predicting for duration
+```
+
+## Post-Tune Evaluation  
+### Important Variables
+```{r}
+# bst_final_mod, bst_pred_data, tuned_importance, imp_plot, xgb_imp_df,
+# full_preds_df, post_tune_mod_pred_viz,
+# post_tune_mod_pred_viz_2,post_tune_diff_hist
+
+xgb_imp_df
+ggplot(data=xgb_imp_df[1:10,], aes(x=Importance, 
+y=reorder(Feature, -Importance, decreasing = TRUE))) + 
+  theme_minimal() + geom_col(fill=nd_navy) +
+  labs(title = "Soccer XGBoost Model Top 10 Most Important Variables", 
+       x = "Importance", y = "Variable") 
+
+#xgb_imp_df[1:10, ]$Feature
+
+xgb_imp_df$z_var_bin <- ifelse(grepl("z", xgb_imp_df$Feature), "z-score", "non-z")
+
+# Now plot using this new column for fill
+ggplot(data=xgb_imp_df[1:10, ], aes(x=Importance,
+                                    y=reorder(Feature, -Importance, decreasing = TRUE))) +
+  theme_minimal() +
+  geom_col(aes(fill=z_var_bin)) +  
+  scale_fill_manual(values=c("z-score"=nd_green, "non-z"=nd_navy)) +
+  labs(title="Top Predictors - Soccer XGBoost", x="Importance", y="Variable")
+```
+
+### Train RMSE line
+```{r}
+bst_final_mod$evaluation_log %>% 
+  pivot_longer(cols = c(train_rmse), names_to = "phase") %>% 
+  ggplot(aes(x = iter, y = value, color = phase)) + geom_line(color=nd_navy, size=2) + theme_minimal() +
+  labs(title = "Train RMSE - Soccer XGBoost")
+```
+
+### Histogram Pre & Post Tune 
+```{r}
+ggplot(full_pred_soc_df, aes(x = difference, y=..density.., fill = time)) + 
+  geom_histogram(data = subset(full_pred_soc_df, time == "pre-tune"),
+                 alpha = 0.5, position = "identity", binwidth =50) + 
+  geom_histogram(data = subset(full_pred_soc_df, time == "post-tune"),
+                 alpha = 0.5, position = "identity", binwidth = 50) + 
+  scale_fill_manual(values = c("pre-tune" = nd_navy, "post-tune" = nd_green)) + 
+  labs(title = "Overlaying Histograms - Soccer",
+       x = "Residual (Actual - Predicted)", y = "Frequency") + 
+  theme_minimal() + xlim(-1500, 1500)
+```
+
+```{r}
+post <- full_pred_soc_df %>% filter(time == "post-tune")
+dim(post[abs(post$) <= 150, ])[1]/(dim(post)[1]) #75.9%
+```
+
+# Women's Lacrosse
+## Loading from RDAs
+```{r}
+base_path <- ".\\CRC_RDAs\\Old Folders"
+team_dir <- "\\lax1_dur_r3"
+file_abr <- "\\l1_dur_"
+file_names <- c("alpha_lambda.rda", "bst_final_mod.rda", 
+                "eta.rda", "gamma.rda", "min_child_max_depth.rda", 
+                "pre_tune_files.rda", "sample_colsample.rda")
+
+file_names_vec <- c()
+
+for (f in seq_along(file_names)){
+  new_name <- paste0(base_path, team_dir, file_abr, file_names[f])
+  file_names_vec <- c(file_names_vec, new_name)
+  
+  load(new_name)
+}
+
+
+# load(".\\CRC_RDAs\\lax1_r2\\lax1_alpha_lambda.rda")
+# #res_db, bst_lambda, bst_alpha, g_5,
+
+# load(".\\CRC_RDAs\\lax1_r2\\lax1_bst_final_mod.rda")
+# # bst_final_mod, bst_pred_data, tuned_importance, imp_plot, xgb_imp_df,
+# # lax1_full_preds_df, post_tune_mod_pred_viz,
+# # post_tune_mod_pred_viz_2, post_tune_diff_hist
+
+# load(".\\CRC_RDAs\\lax1_r2\\lax1_eta.rda")
+# #bst_mod_1, bst_mod_2, bst_mod_3, bst_mod_4, bst_mod_5,g_6, g_7, plot_data,
+
+# load(".\\CRC_RDAs\\lax1_r2\\lax1_gamma.rda")
+# # gam_df, bst_gamma,
+
+# load(".\\CRC_RDAs\\lax1_r2\\lax1_min_child_max_depth.rda")
+# # res_db, bst_max_depth, bst_min_child, g_2, 
+
+# load(".\\CRC_RDAs\\lax1_r2\\lax1_pre_tune_files.rda")
+# # prelim_importance, bst_split_pred_data_pre_tune, pred_viz_pre_tune, diff_hist_pre_tune
+
+# load(".\\CRC_RDAs\\lax1_r2\\lax1_sample_colsample.rda")
+# # res_db, bst_col_samp, bst_sub_samp, g_4, 
+
+options(scipen = 999) # turn off scientific notation
+test_comb_tuned_df$pred_diff_meters <- test_comb_tuned_df$high_speed_distance - test_comb_tuned_df$hsd_pred
+
+test_comb_tuned_df %>% 
+  select(all_of(c("pred_diff_meters", "high_speed_distance", "hsd_pred")))
+summary(test_comb_tuned_df$pred_diff_meters)
+
+
+
+options(scipen = 999) # turn off scientific notation
+test_comb_df$pred_diff_meters <- test_comb_df$high_speed_distance - test_comb_df$hsd_pred
+
+test_comb_df %>% 
+  select(all_of(c("pred_diff_meters", "high_speed_distance", "hsd_pred")))
+summary(test_comb_df$pred_diff_meters)
+
+lax1_full_preds_df <- rbind.data.frame(test_comb_df, test_comb_tuned_df)
+
+test_comb_tuned_df
+
+```
+
+## Post-Tune Evaluation  
+### Important Variables
+```{r}
+# bst_final_mod, bst_pred_data, tuned_importance, imp_plot, xgb_imp_df,
+# lax1_full_preds_df, post_tune_mod_pred_viz,
+# post_tune_mod_pred_viz_2,post_tune_diff_hist
+
+xgb_imp_df
+ggplot(data=xgb_imp_df[1:10,], aes(x=Importance, 
+                                   y=reorder(Feature, -Importance, decreasing = TRUE))) + 
+  theme_minimal() + geom_col(fill=nd_green) +
+  labs(title = "XG Boost Model Top 5 Most Important Variables", 
+       x = "Importance", y = "Variable") 
+
+xgb_imp_df[1:10, ]$Feature
+```
+
+### Train RMSE line
+```{r}
+bst_final_mod$evaluation_log %>% 
+  pivot_longer(cols = c(train_rmse), names_to = "phase") %>% 
+  ggplot(aes(x = iter, y = value, color = phase)) + geom_line(color=nd_navy, size=2) + theme_minimal() +
+  labs(title = "Train RMSE - lax1 XGBoost")
+```
+
+### Histogram Pre & Post-Tune
+```{r}
+# ggplot(lax1_full_preds_df, aes(x = pred_diff_meters, y=..density.., fill = time)) +
+#   geom_histogram(data = subset(lax1_full_preds_df, time == "pre-tune"),
+#                  #alpha = 0.5, 
+#                  position = "identity", binwidth =50) +
+#   # geom_histogram(data = subset(lax1_full_preds_df, time == "post-tune"),
+#   #                alpha = 0.5, position = "identity", binwidth = 50) +
+#   scale_fill_manual(values = c("pre-tune" = nd_navy, "post-tune" = nd_green)) +
+#   labs(title = "Overlaying Histograms - lax1",
+#        x = "Residual (Actual - Predicted)", y = "Frequency") +
+#   theme_minimal() + xlim(-1025, 1025)
+
+ggplot(test_comb_tuned_df,
+       aes(x = pred_diff_meters, y=..density.., fill = time)) +
+  geom_histogram(alpha = 0.5, position = "identity", binwidth =50) +
+  # geom_histogram(data = subset(lax1_full_preds_df, time == "post-tune"),
+  #                alpha = 0.5, position = "identity", binwidth = 50) +
+  scale_fill_manual(values = c("pre-tune" = nd_navy, "post-tune" = nd_green)) +
+  labs(title = "Histograms - lax1",
+       x = "Residual (Actual - Predicted)", y = "Frequency") +
+  theme_minimal() + xlim(-1025, 1025)
+```
+
+### percent of preds within distance
+```{r}
+# lax1_post <- lax1_full_preds_df %>% filter(time == "post-tune")
+# dim(lax1_post[abs(lax1_post$pred_diff_meters) <= 150, ])[1]/(dim(lax1_post)[1]) #75.9%
+# 
+# lax1_pre <- lax1_full_preds_df %>% filter(time == "pre-tune")
+# dim(lax1_pre[abs(lax1_pre$pred_diff_meters) <= 150, ])[1]/(dim(lax1_pre)[1])
+# 
+# test_comb_df
+# 
+# summary(lax1_pre$pred_diff_meters)
+
+test_comb_tuned_df$pred_diff_meters
+dim(test_comb_tuned_df[abs(test_comb_tuned_df$pred_diff_meters) <= 150, ])[1]/(dim(test_comb_tuned_df)[1])
+```
+
+
+
+# Men's Lacrosse
+## Loading from RDAs
+```{r}
+base_path <- ".\\CRC_RDAs\\Old Folders"
+team_dir <- "\\lax0_dur_r1"
+file_abr <- "\\l0_dur_"
+file_names <- c("alpha_lambda.rda", "bst_final_mod.rda", 
+                "eta.rda", "gamma.rda", "min_child_max_depth.rda", 
+                "pre_tune_files.rda", "sample_colsample.rda")
+
+file_names_vec <- c()
+
+for (f in seq_along(file_names)){
+  new_name <- paste0(base_path, team_dir, file_abr, file_names[f])
+  file_names_vec <- c(file_names_vec, new_name)
+  
+  load(new_name)
+}
+
+
+# load(".\\CRC_RDAs\\lax1_r2\\lax1_alpha_lambda.rda")
+# #res_db, bst_lambda, bst_alpha, g_5,
+
+# load(".\\CRC_RDAs\\lax1_r2\\lax1_bst_final_mod.rda")
+# # bst_final_mod, bst_pred_data, tuned_importance, imp_plot, xgb_imp_df,
+# # lax1_full_preds_df, post_tune_mod_pred_viz,
+# # post_tune_mod_pred_viz_2, post_tune_diff_hist
+
+# load(".\\CRC_RDAs\\lax1_r2\\lax1_eta.rda")
+# #bst_mod_1, bst_mod_2, bst_mod_3, bst_mod_4, bst_mod_5,g_6, g_7, plot_data,
+
+# load(".\\CRC_RDAs\\lax1_r2\\lax1_gamma.rda")
+# # gam_df, bst_gamma,
+
+# load(".\\CRC_RDAs\\lax1_r2\\lax1_min_child_max_depth.rda")
+# # res_db, bst_max_depth, bst_min_child, g_2, 
+
+# load(".\\CRC_RDAs\\lax1_r2\\lax1_pre_tune_files.rda")
+# # prelim_importance, bst_split_pred_data_pre_tune, pred_viz_pre_tune, diff_hist_pre_tune
+
+# load(".\\CRC_RDAs\\lax1_r2\\lax1_sample_colsample.rda")
+# # res_db, bst_col_samp, bst_sub_samp, g_4, 
+
+options(scipen = 999) # turn off scientific notation
+test_comb_tuned_df$pred_diff_meters <- test_comb_tuned_df$high_speed_distance - test_comb_tuned_df$hsd_pred
+
+test_comb_tuned_df %>% 
+  select(all_of(c("pred_diff_meters", "high_speed_distance", "hsd_pred")))
+summary(test_comb_tuned_df$pred_diff_meters)
+
+
+
+options(scipen = 999) # turn off scientific notation
+test_comb_df$pred_diff_meters <- test_comb_df$high_speed_distance - test_comb_df$hsd_pred
+
+test_comb_df %>% 
+  select(all_of(c("pred_diff_meters", "high_speed_distance", "hsd_pred")))
+summary(test_comb_df$pred_diff_meters)
+
+#lax1_full_preds_df <- rbind.data.frame(test_comb_df, test_comb_tuned_df)
+
+test_comb_tuned_df
+
+```
+
+## Post-Tune Evaluation  
+### Important Variables
+```{r}
+# bst_final_mod, bst_pred_data, tuned_importance, imp_plot, xgb_imp_df,
+# lax1_full_preds_df, post_tune_mod_pred_viz,
+# post_tune_mod_pred_viz_2,post_tune_diff_hist
+
+xgb_imp_df
+ggplot(data=xgb_imp_df[1:10,], aes(x=Importance, 
+                                   y=reorder(Feature, -Importance, decreasing = TRUE))) + 
+  theme_minimal() + geom_col(fill=nd_green) +
+  labs(title = "XG Boost Model Top 5 Most Important Variables", 
+       x = "Importance", y = "Variable") 
+
+xgb_imp_df[1:10, ]$Feature
+```
+
+### Train RMSE line
+```{r}
+bst_final_mod$evaluation_log %>% 
+  pivot_longer(cols = c(train_rmse), names_to = "phase") %>% 
+  ggplot(aes(x = iter, y = value, color = phase)) + geom_line(color=nd_navy, size=2) + theme_minimal() +
+  labs(title = "Train RMSE - lax1 XGBoost")
+```
+
+### Histogram Pre & Post-Tune
+```{r}
+# ggplot(lax1_full_preds_df, aes(x = pred_diff_meters, y=..density.., fill = time)) +
+#   geom_histogram(data = subset(lax1_full_preds_df, time == "pre-tune"),
+#                  #alpha = 0.5, 
+#                  position = "identity", binwidth =50) +
+#   # geom_histogram(data = subset(lax1_full_preds_df, time == "post-tune"),
+#   #                alpha = 0.5, position = "identity", binwidth = 50) +
+#   scale_fill_manual(values = c("pre-tune" = nd_navy, "post-tune" = nd_green)) +
+#   labs(title = "Overlaying Histograms - lax1",
+#        x = "Residual (Actual - Predicted)", y = "Frequency") +
+#   theme_minimal() + xlim(-1025, 1025)
+
+ggplot(test_comb_tuned_df,
+       aes(x = pred_diff_meters, y=..density.., fill = time)) +
+  geom_histogram(alpha = 0.5, position = "identity", binwidth =50) +
+  # geom_histogram(data = subset(lax1_full_preds_df, time == "post-tune"),
+  #                alpha = 0.5, position = "identity", binwidth = 50) +
+  scale_fill_manual(values = c("pre-tune" = nd_navy, "post-tune" = nd_green)) +
+  labs(title = "Histograms - lax0",
+       x = "Residual (Actual - Predicted)", y = "Frequency") +
+  theme_minimal() + xlim(-1025, 1025)
+```
+
+### percent of preds within distance
+```{r}
+# lax1_post <- lax1_full_preds_df %>% filter(time == "post-tune")
+# dim(lax1_post[abs(lax1_post$pred_diff_meters) <= 150, ])[1]/(dim(lax1_post)[1]) #75.9%
+# 
+# lax1_pre <- lax1_full_preds_df %>% filter(time == "pre-tune")
+# dim(lax1_pre[abs(lax1_pre$pred_diff_meters) <= 150, ])[1]/(dim(lax1_pre)[1])
+# 
+# test_comb_df
+# 
+# summary(lax1_pre$pred_diff_meters)
+
+#test_comb_tuned_df$pred_diff_meters
+dim(test_comb_tuned_df[abs(test_comb_tuned_df$pred_diff_meters) <= 150, ])[1]/(dim(test_comb_tuned_df)[1])
+
+over500_diff <- dim(test_comb_tuned_df[abs(test_comb_tuned_df$pred_diff_meters) >= 500, ])[1]
+over250_diff <- dim(test_comb_tuned_df[abs(test_comb_tuned_df$pred_diff_meters) >= 250, ])[1]
+
+(over250_diff-over500_diff)/(dim(test_comb_tuned_df)[1])
+
+# 9 % between +-250
+```
+
+
+
+### Loading from RDAs
+```{r}
+load(".\\CRC_RDAs\\lax0_r2\\lax0_alpha_lambda.rda")
+#res_db, bst_lambda, bst_alpha, g_5,
+load(".\\CRC_RDAs\\lax0_r2\\lax0_bst_final_mod.rda")
+# bst_final_mod, bst_pred_data, tuned_importance, imp_plot, xgb_imp_df,
+# lax0_full_preds_df, post_tune_mod_pred_viz,
+# post_tune_mod_pred_viz_2,post_tune_diff_hist
+load(".\\CRC_RDAs\\lax0_r2\\lax0_eta.rda")
+#bst_mod_1, bst_mod_2, bst_mod_3, bst_mod_4, bst_mod_5,g_6, g_7, plot_data,
+load(".\\CRC_RDAs\\lax0_r2\\lax0_gamma.rda")
+# gam_df, bst_gamma,
+load(".\\CRC_RDAs\\lax0_r2\\lax0_min_child_max_depth.rda")
+# res_db, bst_max_depth, bst_min_child, g_2, 
+load(".\\CRC_RDAs\\lax0_r2\\lax0_pre_tune_files.rda")
+# prelim_importance, bst_split_pred_data_pre_tune, pred_viz_pre_tune, diff_hist_pre_tune
+load(".\\CRC_RDAs\\lax0_r2\\lax0_sample_colsample.rda")
+# res_db, bst_col_samp, bst_sub_samp, g_4, 
+```
+
+## Post-Tune Evaluation
+### Important Variables
+```{r}
+# bst_final_mod, bst_pred_data, tuned_importance, imp_plot, xgb_imp_df,
+# lax0_full_preds_df, post_tune_mod_pred_viz,
+# post_tune_mod_pred_viz_2,post_tune_diff_hist
+
+xgb_imp_df
+ggplot(data=xgb_imp_df[1:10,], aes(x=Importance, 
+                                                       y=reorder(Feature, -Importance, decreasing = TRUE))) + 
+  theme_minimal() + geom_col(fill=nd_navy) +
+  labs(title = "XG Boost Model Top 5 Most Important Variables", 
+       x = "Importance", y = "Variable") 
+
+mlax_imp_10 <- xgb_imp_df[1:10, ]$Feature
+
+wlax_imp_10 <- c(
+   "player_load_band_3_total_player_load_z"           , "player_load_band_2_total_player_load_z"           
+, "edi_z"                                            
+, "average_player_load_slow_session_z"               
+, "player_load_slow_z"                               
+, "pl_hi_sess_z"                                     
+, "ima_7_o_clock_low_1_0_z"                          
+,"player_load_1d_up_z"                              
+, "player_load_band_2_average_effort_count_session_z"
+, "average_player_load_slow_z" 
+)
+
+wlax_imp_10[wlax_imp_10 %in% mlax_imp_10]
+```
+
+### Train RMSE Line
+```{r}
+bst_final_mod$evaluation_log %>% 
+  pivot_longer(cols = c(train_rmse), names_to = "phase") %>% 
+  ggplot(aes(x = iter, y = value, color = phase)) + geom_line(color=nd_navy, size=2) + theme_minimal() +
+  labs(title = "Train RMSE - Lax0 XGBoost")
+
+post_df <- lax0_full_preds_df %>% 
+  filter(time == "post-tune") 
+
+summary(post_df$difference)
+```
+
+
+### Histogram Pre & Post-Tune
+```{r}
+ggplot(lax0_full_preds_df, aes(x = difference, y=..density.., fill = time)) + 
+  geom_histogram(data = subset(lax0_full_preds_df, time == "pre-tune"),
+                 alpha = 0.5, position = "identity", binwidth =50) + 
+  geom_histogram(data = subset(lax0_full_preds_df, time == "post-tune"),
+                 alpha = 0.5, position = "identity", binwidth = 50) + 
+  scale_fill_manual(values = c("pre-tune" = nd_navy, "post-tune" = nd_green)) + 
+  labs(title = "Overlaying Histograms - Lax0",
+       x = "Residual (Actual - Predicted)", y = "Frequency") + 
+  theme_minimal() 
+```
+
+### Percent of Preds within distnce
+```{r}
+lax0_post <- lax0_full_preds_df %>% filter(time == "post-tune")
+dim(lax0_post[abs(lax0_post$difference) <= 150, ])[1]/(dim(lax0_post)[1]) #75.9%
+```
